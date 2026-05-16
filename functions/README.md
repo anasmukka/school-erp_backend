@@ -39,7 +39,7 @@ Copy `functions/index.js` to your Firebase project's `functions/` directory.
 You need a Gmail App Password (not your regular password):
 1. Go to https://myaccount.google.com/apppasswords
 2. Generate a new app password for "Mail"
-3. Set the :
+3. Set the environment variables
 
 ```bash
 # Using Firebase secrets (recommended for v2 functions)

@@ -61,17 +61,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DEFAULT_SERVICE_ACCOUNT_PATH = ROOT_DIR / "serviceAccountKey.json"
+SERVICE_ACCOUNT_ENV_VARS = (
+    "FIREBASE_SERVICE_ACCOUNT_PATH",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
 UID_PATTERN = re.compile(r"^[0-9a-f]+$")
+
+
+def resolve_service_account_path() -> Path:
+    invalid_configured_paths = []
+
+    for env_var in SERVICE_ACCOUNT_ENV_VARS:
+        raw_value = os.environ.get(env_var, "").strip()
+        if not raw_value:
+            continue
+
+        candidate = Path(raw_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = (ROOT_DIR / candidate).resolve()
+
+        if candidate.exists():
+            return candidate
+
+        invalid_configured_paths.append(f"{env_var}={candidate}")
+
+    if DEFAULT_SERVICE_ACCOUNT_PATH.exists():
+        return DEFAULT_SERVICE_ACCOUNT_PATH
+
+    configured_hint = ""
+    if invalid_configured_paths:
+        configured_hint = " Invalid configured path(s): " + ", ".join(invalid_configured_paths) + "."
+
+    raise RuntimeError(
+        "Missing Firebase service account key. Put it at "
+        f"'{DEFAULT_SERVICE_ACCOUNT_PATH}', or set FIREBASE_SERVICE_ACCOUNT_PATH / "
+        f"GOOGLE_APPLICATION_CREDENTIALS to a valid JSON file path.{configured_hint}"
+    )
+
 
 SERVICE_ACCOUNT_PATH = os.getenv(
     "GOOGLE_APPLICATION_CREDENTIALS",
     "/etc/secrets/serviceAccountKey.json"
 )
 
-if not os.path.exists(SERVICE_ACCOUNT_PATH):
-    raise RuntimeError(
-        f"Firebase service account key not found at: {SERVICE_ACCOUNT_PATH}"
-    )
+cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+firebase_admin.initialize_app(cred)
 
 
 def initialize_firestore():
