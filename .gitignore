@@ -1,0 +1,5 @@
+.venv/
+backend/.vendor/
+backend/__pycache__/
+backend/serviceAccountKey.json
+node_modules
