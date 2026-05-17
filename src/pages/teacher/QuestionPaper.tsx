@@ -47,6 +47,13 @@ function groupByType(questions: QPQuestion[]): QGroup[] {
 /* ─────────── Types ─────────── */
 export type QType = "short" | "mcq" | "long" | "question";
 
+export interface QPSubQuestion {
+  id: string;
+  text: string;
+  marks: number;
+  imageData?: string;
+}
+
 export interface QPQuestion {
   id: string;
   type: QType;
@@ -55,6 +62,11 @@ export interface QPQuestion {
   imageData?: string;
   options?: [string, string, string, string];
   correctOption?: number;
+  /**
+   * Backward-compatible field used by older "roman"/long-answer structures.
+   * The teacher paper builder doesn't create these anymore, but we still render them.
+   */
+  subQuestions?: QPSubQuestion[];
 }
 
 export interface QPSection {

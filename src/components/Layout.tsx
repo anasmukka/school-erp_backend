@@ -55,15 +55,20 @@ const navItems: NavItem[] = [
   { label: "Schedule Exams", href: "/hod/exams", icon: <Calendar size={18} />, roles: ["hod"] },
   { label: "Question Papers", href: "/hod/question-papers", icon: <FilePen size={18} />, roles: ["hod"] },
   { label: "Report Cards", href: "/hod/report-cards", icon: <ClipboardCheck size={18} />, roles: ["hod"] },
+  { label: "Notices", href: "/hod/notices", icon: <Bell size={18} />, roles: ["hod"] },
   { label: "ID Cards", href: "/id-cards", icon: <CreditCard size={18} />, roles: ["hod"] },
   { label: "Marks Entry", href: "/teacher/marks", icon: <PenLine size={18} />, roles: ["teacher"] },
   { label: "RFID Attendance", href: "/teacher/rfid-attendance", icon: <Wifi size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Manual Attendance", href: "/teacher/manual-attendance", icon: <ClipboardCheck size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Attendance Register", href: "/teacher/attendance-register", icon: <CalendarCheck2 size={18} />, roles: ["teacher"], requiresClassTeacher: true },
+  { label: "Assignments & Activities", href: "/teacher/assignments", icon: <FileText size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Report Cards", href: "/teacher/report-cards", icon: <FileText size={18} />, roles: ["teacher"] },
   { label: "Question Papers", href: "/teacher/question-papers", icon: <FilePen size={18} />, roles: ["teacher"] },
   { label: "My Fees", href: "/student/fees", icon: <CreditCard size={18} />, roles: ["student"] },
   { label: "My Report Card", href: "/student/report-card", icon: <FileText size={18} />, roles: ["student"] },
+  { label: "Assignments & Activities", href: "/student/assignments", icon: <FileText size={18} />, roles: ["student"] },
+  { label: "Attendance Overview", href: "/student/attendance-overview", icon: <CalendarCheck2 size={18} />, roles: ["student"] },
+  { label: "Notices", href: "/student/notices", icon: <Bell size={18} />, roles: ["student"] },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

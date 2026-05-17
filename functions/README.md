@@ -66,3 +66,27 @@ firebase deploy --only functions
 - **"Teacher not found"**: Ensure the teacher document exists in Firestore
 - **"No email for teacher"**: Add the `email` field to the teacher document
 - **Gmail blocks the email**: Enable "Less secure app access" or use an App Password
+
+---
+
+# WhatsApp Sending (Assignments & Activities)
+
+This repo also includes a Firestore trigger that sends WhatsApp messages when a new document is created in
+`assignmentsActivities`.
+
+## Required secrets
+Set these as Firebase secrets (recommended):
+
+```bash
+firebase functions:secrets:set WHATSAPP_TOKEN
+firebase functions:secrets:set WHATSAPP_PHONE_NUMBER_ID
+firebase functions:secrets:set WHATSAPP_API_VERSION
+```
+
+Defaults:
+- `WHATSAPP_API_VERSION` defaults to `v20.0` when not set.
+
+## Notes
+- The function reads student phone numbers from `students.parentContact`.
+- It normalizes common India formats (10-digit numbers -> prefixes `91`).
+- It sends **text messages** only (images are not sent via WhatsApp in the current implementation).

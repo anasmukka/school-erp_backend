@@ -27,13 +27,18 @@ import QuestionPaper from "@/pages/teacher/QuestionPaper";
 import AttendanceRegister from "@/pages/teacher/AttendanceRegister";
 import TeacherRfidAttendance from "@/pages/teacher/RfidAttendance";
 import ManualAttendance from "@/pages/teacher/ManualAttendance";
+import TeacherAssignmentsActivities from "@/pages/teacher/AssignmentsActivities";
 import StudentFees from "@/pages/student/Fees";
 import StudentReportCard from "@/pages/student/ReportCard";
+import StudentAssignmentsActivities from "@/pages/student/AssignmentsActivities";
+import StudentAttendanceOverview from "@/pages/student/AttendanceOverview";
+import StudentNotices from "@/pages/student/Notices";
 import Collections from "@/pages/accounts/Collections";
 import Admissions from "@/pages/admin/Admissions";
 import AdminReportCardApproval from "@/pages/admin/ReportCardApproval";
 import SignatureManagement from "@/pages/admin/SignatureManagement";
 import RfidCards from "@/pages/admin/RfidCards";
+import HodNotices from "@/pages/hod/Notices";
 
 const queryClient = new QueryClient();
 
@@ -78,15 +83,20 @@ function Router() {
       <Route path="/hod/exams" component={() => <ProtectedRoute component={ExamScheduling} roles={["hod"]} />} />
       <Route path="/hod/question-papers" component={() => <ProtectedRoute component={QuestionPaperApproval} roles={["hod"]} />} />
       <Route path="/hod/report-cards" component={() => <ProtectedRoute component={HodReportCardApproval} roles={["hod"]} />} />
+      <Route path="/hod/notices" component={() => <ProtectedRoute component={HodNotices} roles={["hod"]} />} />
       <Route path="/teacher/marks" component={() => <ProtectedRoute component={MarksEntry} roles={["teacher"]} />} />
       <Route path="/teacher/report-cards" component={() => <ProtectedRoute component={TeacherReportCards} roles={["teacher"]} />} />
       <Route path="/teacher/co-scholastic" component={() => <ProtectedRoute component={CoScholastic} roles={["teacher"]} />} />
       <Route path="/teacher/rfid-attendance" component={() => <ProtectedRoute component={TeacherRfidAttendance} roles={["teacher"]} />} />
       <Route path="/teacher/manual-attendance" component={() => <ProtectedRoute component={ManualAttendance} roles={["teacher"]} />} />
       <Route path="/teacher/attendance-register" component={() => <ProtectedRoute component={AttendanceRegister} roles={["teacher"]} />} />
+      <Route path="/teacher/assignments" component={() => <ProtectedRoute component={TeacherAssignmentsActivities} roles={["teacher"]} />} />
       <Route path="/teacher/question-papers" component={() => <ProtectedRoute component={QuestionPaper} roles={["teacher"]} />} />
       <Route path="/student/report-card" component={() => <ProtectedRoute component={StudentReportCard} roles={["student"]} />} />
       <Route path="/student/fees" component={() => <ProtectedRoute component={StudentFees} roles={["student"]} />} />
+      <Route path="/student/assignments" component={() => <ProtectedRoute component={StudentAssignmentsActivities} roles={["student"]} />} />
+      <Route path="/student/attendance-overview" component={() => <ProtectedRoute component={StudentAttendanceOverview} roles={["student"]} />} />
+      <Route path="/student/notices" component={() => <ProtectedRoute component={StudentNotices} roles={["student"]} />} />
       <Route path="/id-cards" component={() => <ProtectedRoute component={IDCards} roles={["admin", "hod"]} />} />
       <Route path="/setup" component={Setup} />
       <Route component={() => <Redirect to="/" />} />

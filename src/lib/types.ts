@@ -264,3 +264,32 @@ export interface SignatureRecord {
   imageUrl: string;
   updatedAt: string;
 }
+
+export type AssignmentActivityKind = "assignment" | "activity";
+
+export interface AssignmentActivity {
+  id: string;
+  kind: AssignmentActivityKind;
+  sectionId: string;
+  grade?: string;
+  title: string;
+  description?: string;
+  dueDate: string; // YYYY-MM-DD
+  images?: { name: string; dataUrl: string }[];
+  createdAt: string;
+  createdBy: string; // teacher document id (or other role id)
+  createdByName?: string;
+  whatsappStatus?: "pending" | "sent" | "failed";
+  whatsappError?: string;
+}
+
+export interface HodNotice {
+  id: string;
+  type: "exam_schedule" | "general";
+  grade: string;
+  hodId: string;
+  title?: string;
+  message: string;
+  images?: { name: string; dataUrl: string }[];
+  createdAt: string;
+}

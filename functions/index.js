@@ -126,3 +126,151 @@ exports.sendNotificationEmail = onDocumentCreated(
     }
   }
 );
+
+/**
+ * Firebase Cloud Function: WhatsApp notification for assignments/activities
+ *
+ * Triggers when a new document is created in `assignmentsActivities`.
+ * Sends a WhatsApp text message to each student's `parentContact` in that section.
+ *
+ * Required secrets/env:
+ * - WHATSAPP_TOKEN (Meta WhatsApp Cloud API access token)
+ * - WHATSAPP_PHONE_NUMBER_ID (Meta phone number id)
+ * - WHATSAPP_API_VERSION (optional, default "v20.0")
+ */
+
+function normalizeWhatsAppNumber(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+
+  // keep digits only
+  let digits = raw.replace(/[^\d]/g, "");
+
+  // Common India formats:
+  // - 10 digits => prefix 91
+  // - 11 digits starting with 0 => drop 0 and prefix 91
+  // - already 12+ digits with country code => keep
+  if (digits.length === 11 && digits.startsWith("0")) {
+    digits = digits.slice(1);
+  }
+  if (digits.length === 10) {
+    digits = `91${digits}`;
+  }
+
+  if (digits.length < 11) return null;
+  return digits;
+}
+
+async function sendWhatsAppText({ to, body }) {
+  const token = process.env.WHATSAPP_TOKEN || "";
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+  const apiVersion = process.env.WHATSAPP_API_VERSION || "v20.0";
+
+  if (!token || !phoneNumberId) {
+    throw new Error("WhatsApp credentials not configured (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID).");
+  }
+
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`WhatsApp API error (${res.status}): ${text || res.statusText}`);
+  }
+
+  return res.json().catch(() => ({}));
+}
+
+function buildWorkMessage({ kind, title, dueDate, description, grade }) {
+  const kindLabel = kind === "activity" ? "Activity" : "Assignment";
+  const lines = [
+    `Prestige International School`,
+    `${kindLabel} for Grade ${grade || ""}`.trim(),
+    `Title: ${title || "-"}`,
+    `Due: ${dueDate || "-"}`,
+  ];
+  const cleaned = String(description || "").trim();
+  if (cleaned) {
+    lines.push("");
+    lines.push(cleaned.length > 600 ? `${cleaned.slice(0, 600)}...` : cleaned);
+  }
+  return lines.join("\n");
+}
+
+exports.sendAssignmentWhatsApp = onDocumentCreated(
+  { document: "assignmentsActivities/{docId}", region: "us-central1" },
+  async (event) => {
+    const data = event.data?.data();
+    if (!data) return;
+
+    const sectionId = String(data.sectionId || "").trim();
+    if (!sectionId) return;
+
+    const kind = String(data.kind || "assignment");
+    const title = String(data.title || "");
+    const dueDate = String(data.dueDate || "");
+    const description = String(data.description || "");
+    const grade = String(data.grade || "");
+
+    const messageBody = buildWorkMessage({ kind, title, dueDate, description, grade });
+
+    try {
+      const studentsSnap = await db.collection("students").where("sectionId", "==", sectionId).get();
+      const recipients = [];
+      studentsSnap.forEach((docSnap) => {
+        const s = docSnap.data() || {};
+        const to = normalizeWhatsAppNumber(s.parentContact);
+        if (!to) return;
+        recipients.push({ to, studentId: docSnap.id });
+      });
+
+      if (recipients.length === 0) {
+        await event.data.ref.update({
+          whatsappStatus: "failed",
+          whatsappError: "No valid parentContact numbers found for students in this section.",
+          whatsappAttemptedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      let sent = 0;
+      const errors = [];
+
+      // Simple sequential send: typical section sizes are small; avoids hitting API limits.
+      for (const r of recipients) {
+        try {
+          await sendWhatsAppText({ to: r.to, body: messageBody });
+          sent += 1;
+        } catch (err) {
+          errors.push(String(err?.message || err));
+        }
+      }
+
+      await event.data.ref.update({
+        whatsappStatus: errors.length === 0 ? "sent" : "failed",
+        whatsappSentCount: sent,
+        whatsappError: errors.slice(0, 3).join(" | "),
+        whatsappAttemptedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("Failed to send WhatsApp messages:", error);
+      await event.data.ref.update({
+        whatsappStatus: "failed",
+        whatsappError: error.message || "Unknown error",
+        whatsappAttemptedAt: new Date().toISOString(),
+      });
+    }
+  }
+);
