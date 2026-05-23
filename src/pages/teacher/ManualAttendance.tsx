@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Section, Student } from "@/lib/types";
+import { getCurrentAcademicYear, loadStudentsForSection, sortStudentsByRoll } from "@/lib/enrollments";
 import { CalendarDays, Loader2, Lock, RefreshCcw, Save } from "lucide-react";
 
 type AttendanceCode = "P" | "A" | "L";
@@ -64,8 +65,13 @@ export default function ManualAttendance() {
   const [students, setStudents] = useState<Student[]>([]);
   const [attendanceByStudent, setAttendanceByStudent] = useState<Record<string, AttendanceDoc>>({});
   const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [academicYear, setAcademicYear] = useState("");
 
   const today = useMemo(() => getLocalIsoDate(), []);
+
+  useEffect(() => {
+    void getCurrentAcademicYear().then(setAcademicYear);
+  }, []);
 
   const loadTeacherSection = async () => {
     if (!appUser) return;
@@ -122,28 +128,33 @@ export default function ManualAttendance() {
       return () => {};
     }
 
-    const studentQuery = query(collection(db, "students"), where("sectionId", "==", assignedSection.id));
     const attendanceQuery = query(
       collection(db, "attendance"),
       where("sectionId", "==", assignedSection.id),
       where("date", "==", today),
     );
 
-    const unsubscribeStudents = onSnapshot(
-      studentQuery,
-      (snap) => {
-        const nextStudents = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Student));
-        nextStudents.sort((a, b) => {
-          const ar = a.rollNo?.trim() ?? "";
-          const br = b.rollNo?.trim() ?? "";
-          return ar.localeCompare(br, undefined, { numeric: true, sensitivity: "base" }) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-        });
-        setStudents(nextStudents);
-      },
-      () => {
-        /* ignore */
-      },
-    );
+    const enrollmentQuery = academicYear
+      ? query(
+          collection(db, "enrollments"),
+          where("sectionId", "==", assignedSection.id),
+          where("status", "==", "active"),
+          where("academicYear", "==", academicYear),
+        )
+      : null;
+
+    const unsubscribeStudents = enrollmentQuery
+      ? onSnapshot(
+          enrollmentQuery,
+          async () => {
+            const nextStudents = await loadStudentsForSection(assignedSection.id, academicYear);
+            setStudents(sortStudentsByRoll(nextStudents) as Student[]);
+          },
+          () => {
+            /* ignore */
+          },
+        )
+      : () => {};
 
     const unsubscribeAttendance = onSnapshot(
       attendanceQuery,
@@ -165,7 +176,7 @@ export default function ManualAttendance() {
       unsubscribeStudents();
       unsubscribeAttendance();
     };
-  }, [assignedSection?.id, today]);
+  }, [assignedSection?.id, academicYear, today]);
 
   const setStudentAttendance = async (student: Student, nextCode: AttendanceCode) => {
     if (!assignedSection || !teacherDocId) return;

@@ -32,14 +32,36 @@ export interface Student {
   photo?: string;
   DOB: string;
   parentContact: string;
-  grade: string;
+  /** @deprecated Use active enrollment className */
+  grade?: string;
   hodId: string;
-  sectionId: string | null;
+  /** @deprecated Use active enrollment sectionId */
+  sectionId?: string | null;
   admissionNo?: string;
+  /** @deprecated Prefer enrollment.rollNo */
   rollNo?: string;
+  rfidUid?: string;
   fatherName?: string;
   motherName?: string;
   address?: string;
+  gender?: string;
+  createdAt?: string;
+}
+
+export type EnrollmentStatus = "active" | "promoted" | "graduated" | "transferred" | "detained";
+
+export interface Enrollment {
+  id: string;
+  studentId: string;
+  academicYear: string;
+  className: string;
+  sectionName: string | null;
+  sectionId: string | null;
+  rollNo?: string;
+  hodId?: string;
+  status: EnrollmentStatus;
+  createdAt: string;
+  promotedFromEnrollmentId?: string;
 }
 
 export interface FeeHead {
@@ -104,6 +126,8 @@ export interface SubjectAssignment {
   subjectId: string;
   sectionId: string;
   teacherId: string;
+  /** Academic year this assignment applies to (defaults to current year in UI). */
+  academicYear?: string;
 }
 
 export interface Section {

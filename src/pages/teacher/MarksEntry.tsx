@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { CheckCircle, Save, ChevronRight, AlertCircle, Lock, CalendarX, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Section, Subject, Student, SubjectAssignment } from "@/lib/types";
+import { loadStudentsForSection, sortStudentsByRoll } from "@/lib/enrollments";
 
 const EXAM_TYPES = ["Unit Test 1", "Term 1", "Unit Test 2", "Final Exam"];
 
@@ -203,7 +204,9 @@ export default function MarksEntry() {
       const pairedUT = isTermExam(examType) ? PAIRED_UT[examType] : null;
 
       const queries: Promise<any>[] = [
-        getDocs(query(collection(db, "students"), where("sectionId", "==", section.id))),
+        loadStudentsForSection(section.id).then((list) => ({
+          docs: sortStudentsByRoll(list).map((s) => ({ id: s.id, data: () => s })),
+        })),
         getDocs(query(
           collection(db, "marks"),
           where("sectionId", "==", section.id),
@@ -231,7 +234,10 @@ export default function MarksEntry() {
       const results = await Promise.all(queries);
       const [studentSnap, myMarksSnap, allMarksSnap, utSnap] = results;
 
-      const fetchedStudents = studentSnap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Student));
+      const fetchedStudents = studentSnap.docs.map((d: any) => {
+        const raw = d.data();
+        return { id: d.id, ...raw } as Student;
+      });
       const existingMarks: Record<string, MarkFields> = {};
       const existingSaved = new Set<string>();
       const otherTeacherBlocked = new Set<string>();

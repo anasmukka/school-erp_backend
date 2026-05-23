@@ -156,7 +156,11 @@ export default function TeacherReportCards() {
 
     try {
       const [studentSnap, assignSnap, rcSnap, examSnap, secDoc] = await Promise.all([
-        getDocs(query(collection(db, "students"), where("sectionId", "==", section.id))),
+        (async () => {
+          const { loadStudentsForSection } = await import("@/lib/enrollments");
+          const list = await loadStudentsForSection(section.id);
+          return { docs: list.map((s) => ({ id: s.id, data: () => s })) };
+        })(),
         getDocs(query(collection(db, "subjectAssignments"), where("sectionId", "==", section.id))),
         getDocs(query(collection(db, "reportCards"), where("sectionId", "==", section.id), where("examType", "==", FINAL_EXAM))),
         getDocs(query(collection(db, "exams"), where("grade", "==", section.grade), where("examType", "==", FINAL_EXAM))),

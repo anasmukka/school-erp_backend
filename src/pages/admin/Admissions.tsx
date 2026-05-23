@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Download, FileText, UploadCloud, Trash2 } from "lucide-react";
 import { User } from "@/lib/types";
+import { getAcademicSession } from "@/lib/fees";
 
 type AdmissionType = "student" | "teacher" | "accountant" | "hod";
 
@@ -308,18 +309,29 @@ export default function Admissions() {
       });
 
       if (form.type === "student") {
+        const admissionGrade = form.grade.trim();
         batch.set(doc(db, "students", uid), {
           uid,
           name: form.name.trim(),
           email: normalizedEmail,
           DOB: form.dob || "",
           parentContact: form.parentContact || "",
-          grade: form.grade.trim(),
           hodId: form.hodId,
-          sectionId: null,
           photo: photoData,
           address: form.address || "",
           admissionNo: buildStudentAdmissionNo(uid),
+          createdAt: now,
+        });
+
+        const enrollmentRef = doc(collection(db, "enrollments"));
+        batch.set(enrollmentRef, {
+          studentId: uid,
+          academicYear: getAcademicSession(),
+          className: admissionGrade,
+          sectionName: null,
+          sectionId: null,
+          hodId: form.hodId,
+          status: "active",
           createdAt: now,
         });
 

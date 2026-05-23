@@ -136,9 +136,9 @@ export default function Dashboard() {
         );
         setStats({ teachers: 0, students: studentsSnap.size, pendingStudents: 0, feeStructures: feeStructuresSnap.size, payments: paymentsSnap.size, collections });
       } else if (appUser.role === "hod") {
-        const q = query(collection(db, "students"), where("hodId", "==", appUser.id), where("sectionId", "==", null));
-        const snap = await getDocs(q);
-        setStats((s) => ({ ...s, pendingStudents: snap.size }));
+        const { listPendingEnrollmentsForHod } = await import("@/lib/enrollments");
+        const pending = await listPendingEnrollmentsForHod(appUser.id);
+        setStats((s) => ({ ...s, pendingStudents: pending.length }));
       } else if (appUser.role === "student") {
         setTimetableSlots([]);
         setAssignedSubjects([]);

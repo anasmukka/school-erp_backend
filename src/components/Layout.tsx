@@ -43,6 +43,7 @@ const navItems: NavItem[] = [
   { label: "Subjects", href: "/admin/subjects", icon: <BookOpen size={18} />, roles: ["admin"] },
   { label: "Accounts Staff", href: "/admin/accounts", icon: <CreditCard size={18} />, roles: ["admin"] },
   { label: "Admissions", href: "/admin/admissions", icon: <FileText size={18} />, roles: ["admin"] },
+  { label: "Student Promotion", href: "/admin/promotion", icon: <GraduationCap size={18} />, roles: ["admin"] },
   { label: "Signatures", href: "/admin/signatures", icon: <Signature size={18} />, roles: ["admin"] },
   { label: "RFID Cards", href: "/admin/rfid-cards", icon: <Wifi size={18} />, roles: ["admin"] },
   { label: "Report Cards", href: "/admin/report-cards", icon: <ClipboardCheck size={18} />, roles: ["admin"] },

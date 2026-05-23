@@ -5,6 +5,7 @@ import {
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Student, Subject, Teacher, SubjectAssignment, Section } from "@/lib/types";
+import { getActiveEnrollment, loadStudentsForSection } from "@/lib/enrollments";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,13 +78,8 @@ export default function ClassManagement() {
 
   const loadStudentsData = async (section: Section) => {
     if (!appUser) return;
-    const q = query(
-      collection(db, "students"),
-      where("hodId", "==", appUser.id),
-      where("sectionId", "==", section.id)
-    );
-    const snap = await getDocs(q);
-    setSectionStudents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Student)));
+    const list = await loadStudentsForSection(section.id);
+    setSectionStudents(list);
   };
 
   useEffect(() => {
@@ -154,7 +150,10 @@ export default function ClassManagement() {
 
   const removeStudent = async (student: Student) => {
     if (!confirm(`Remove ${student.name} from this section?`)) return;
-    await updateDoc(doc(db, "students", student.id), { sectionId: null });
+    const en = await getActiveEnrollment(student.id);
+    if (en) {
+      await updateDoc(doc(db, "enrollments", en.id), { sectionId: null, sectionName: null });
+    }
     setSectionStudents((prev) => prev.filter((s) => s.id !== student.id));
   };
 

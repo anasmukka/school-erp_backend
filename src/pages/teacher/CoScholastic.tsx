@@ -106,11 +106,10 @@ export default function CoScholasticEntry() {
     setSelectedSection(section);
     setLoadingSection(true);
     try {
-      const studentSnap = await getDocs(
-        query(collection(db, "students"), where("sectionId", "==", section.id))
+      const { loadStudentsForSection } = await import("@/lib/enrollments");
+      const students = (await loadStudentsForSection(section.id)).sort((a, b) =>
+        a.name.localeCompare(b.name),
       );
-      const students = studentSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Student));
-      students.sort((a, b) => a.name.localeCompare(b.name));
 
       const populated: CoScholRow[] = await Promise.all(
         students.map(async (s) => {

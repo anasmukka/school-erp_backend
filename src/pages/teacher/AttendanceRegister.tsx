@@ -14,6 +14,7 @@ import {
 import { db } from "@/lib/firebase";
 import { generateAttendanceRegisterPdf, type AttendanceRegisterCode } from "@/lib/generateAttendanceRegisterPdf";
 import { Section, Student } from "@/lib/types";
+import { loadStudentsForSection } from "@/lib/enrollments";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -307,13 +308,7 @@ export default function AttendanceRegister() {
       setLoadingData(true);
 
       try {
-        const studentSnap = await getDocs(
-          query(collection(db, "students"), where("sectionId", "==", selectedSectionId)),
-        );
-
-        const nextStudents = sortStudents(
-          studentSnap.docs.map((studentDoc) => ({ id: studentDoc.id, ...studentDoc.data() } as Student)),
-        );
+        const nextStudents = sortStudents(await loadStudentsForSection(selectedSectionId));
         setStudents(nextStudents);
 
         if (nextStudents.length === 0) {
@@ -416,13 +411,7 @@ export default function AttendanceRegister() {
     setLoadingData(true);
 
     try {
-      const studentSnap = await getDocs(
-        query(collection(db, "students"), where("sectionId", "==", selectedSectionId)),
-      );
-
-      const nextStudents = sortStudents(
-        studentSnap.docs.map((studentDoc) => ({ id: studentDoc.id, ...studentDoc.data() } as Student)),
-      );
+      const nextStudents = sortStudents(await loadStudentsForSection(selectedSectionId));
       setStudents(nextStudents);
 
       const firstDay = toIsoDate(selectedYear, selectedMonth, 1);

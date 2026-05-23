@@ -44,7 +44,9 @@ export default function StudentAssignmentsActivities() {
         setStudent(null);
         return;
       }
-      setStudent({ id: studentSnap.docs[0].id, ...studentSnap.docs[0].data() } as Student);
+      const { getStudentWithActiveEnrollment } = await import("@/lib/enrollments");
+      const withEn = await getStudentWithActiveEnrollment(studentSnap.docs[0].id);
+      setStudent(withEn);
     } finally {
       setLoading(false);
     }
@@ -55,12 +57,13 @@ export default function StudentAssignmentsActivities() {
   }, [appUser]);
 
   useEffect(() => {
-    if (!student?.sectionId) {
+    const sectionId = (student as { activeSectionId?: string | null })?.activeSectionId ?? student?.sectionId;
+    if (!sectionId) {
       setItems([]);
       return () => {};
     }
 
-    const q = query(collection(db, "assignmentsActivities"), where("sectionId", "==", student.sectionId));
+    const q = query(collection(db, "assignmentsActivities"), where("sectionId", "==", sectionId));
     const unsub = onSnapshot(
       q,
       (snap) => {

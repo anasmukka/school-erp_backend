@@ -38,6 +38,7 @@ import Admissions from "@/pages/admin/Admissions";
 import AdminReportCardApproval from "@/pages/admin/ReportCardApproval";
 import SignatureManagement from "@/pages/admin/SignatureManagement";
 import RfidCards from "@/pages/admin/RfidCards";
+import StudentPromotion from "@/pages/admin/Promotion";
 import HodNotices from "@/pages/hod/Notices";
 
 const queryClient = new QueryClient();
@@ -75,6 +76,7 @@ function Router() {
       <Route path="/admin/signatures" component={() => <ProtectedRoute component={SignatureManagement} roles={["admin"]} />} />
       <Route path="/admin/report-cards" component={() => <ProtectedRoute component={AdminReportCardApproval} roles={["admin"]} />} />
       <Route path="/admin/rfid-cards" component={() => <ProtectedRoute component={RfidCards} roles={["admin"]} />} />
+      <Route path="/admin/promotion" component={() => <ProtectedRoute component={StudentPromotion} roles={["admin"]} />} />
       <Route path="/accounts/fees" component={() => <ProtectedRoute component={FeesManagement} roles={["admin", "accountant"]} />} />
       <Route path="/accounts/collections" component={() => <ProtectedRoute component={Collections} roles={["admin", "accountant"]} />} />
       <Route path="/hod/pending" component={() => <ProtectedRoute component={PendingStudents} roles={["hod"]} />} />
