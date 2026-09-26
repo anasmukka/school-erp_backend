@@ -2,14 +2,20 @@ import { initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import { getFunctions, type Functions } from "firebase/functions";
+import { getStorage, type FirebaseStorage } from "firebase/storage";
+
+const getEnv = (key: string) =>
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env[key]) ||
+  (typeof process !== "undefined" && process.env && process.env[key]) ||
+  "";
 
 const firebaseConfig = {
-  apiKey:            import.meta.env.VITE_API_KEY,
-  authDomain:        import.meta.env.VITE_AUTH_DOMAIN,
-  projectId:         import.meta.env.VITE_PROJECT_ID,
-  storageBucket:     import.meta.env.VITE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_MESSAGING_SENDER_ID,
-  appId:             import.meta.env.VITE_APP_ID,
+  apiKey:            getEnv("VITE_API_KEY"),
+  authDomain:        getEnv("VITE_AUTH_DOMAIN"),
+  projectId:         getEnv("VITE_PROJECT_ID"),
+  storageBucket:     getEnv("VITE_STORAGE_BUCKET"),
+  messagingSenderId: getEnv("VITE_MESSAGING_SENDER_ID"),
+  appId:             getEnv("VITE_APP_ID"),
 };
 
 const requiredFirebaseEnv = [
@@ -45,4 +51,5 @@ const app = (firebaseSetup.isConfigured ? initializeApp(firebaseConfig) : null) 
 export const auth = (app ? getAuth(app) : null) as Auth;
 export const db = (app ? getFirestore(app) : null) as Firestore;
 export const functions = (app ? getFunctions(app) : null) as Functions;
+export const storage = (app ? getStorage(app) : null) as FirebaseStorage;
 export default app;

@@ -14,7 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { CreditCard, Plus, User as UserIcon } from "lucide-react";
+import { Plus, User as UserIcon } from "lucide-react";
 
 export default function AccountsStaff() {
   const [staff, setStaff] = useState<User[]>([]);
@@ -73,7 +73,7 @@ export default function AccountsStaff() {
         <div>
           <h1 className="text-2xl font-bold">Accounts Staff</h1>
           <p className="text-sm text-muted-foreground">
-            View users who can operate the fees section. Use the Admissions module to add new accounts staff.
+            View accounts and finance staff. Use the Admissions module to add new accounts staff.
           </p>
         </div>
       </div>
@@ -81,7 +81,7 @@ export default function AccountsStaff() {
       {staff.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
-            No accounts staff users yet. Add one to start managing fees.
+            No accounts staff users yet. Add one to manage finance operations.
           </CardContent>
         </Card>
       ) : (
@@ -101,7 +101,7 @@ export default function AccountsStaff() {
 
                 <div className="flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm">
                   <span className="text-emerald-700">Access</span>
-                  <span className="font-semibold text-emerald-800">Fees Management</span>
+                  <span className="font-semibold text-emerald-800">Accounts & Finance</span>
                 </div>
               </CardContent>
             </Card>
@@ -158,7 +158,7 @@ export default function AccountsStaff() {
             </div>
 
             <div className="rounded-xl border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-              This user will get access to the Accounts fees section and collection workflows.
+              This user will get access to Accounts and financial workflows.
             </div>
 
             <DialogFooter>
@@ -166,7 +166,7 @@ export default function AccountsStaff() {
                 Cancel
               </Button>
               <Button className="gap-2" disabled={loading} type="submit">
-                <CreditCard size={15} />
+                <UserIcon size={15} />
                 {loading ? "Creating..." : "Create User"}
               </Button>
             </DialogFooter>

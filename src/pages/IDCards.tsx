@@ -378,8 +378,8 @@ interface IDField {
   value: string;
 }
 
-const SCHOOL_NAME = "PRESTIGE INTERNATIONAL SCHOOL";
-const SCHOOL_TAGLINE = "Excellence in Education";
+const SCHOOL_NAME = "PRESTIGE INTERNATIONAL SCHOOL & PRE-UNIVERSITY COLLEGE";
+const SCHOOL_TAGLINE = "SCALING NEW HEIGHTS";
 const SCHOOL_ADDRESS = "Prestige International School";
 const SCHOOL_PHONE = "";
 

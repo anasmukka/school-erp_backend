@@ -14,8 +14,11 @@ import {
   listPendingEnrollmentsForHod,
 } from "@/lib/enrollments";
 
+import { useToast } from "@/hooks/use-toast";
+
 export default function PendingStudents() {
   const { appUser } = useAuth();
+  const { toast } = useToast();
   const [pending, setPending] = useState<{ student: Student; enrollmentId: string; className: string }[]>([]);
   const [selected, setSelected] = useState<Student | null>(null);
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState("");
@@ -71,13 +74,21 @@ export default function PendingStudents() {
           rollNo: selected.rollNo,
         });
       }
-      await assignSectionToEnrollment(enrollmentId, section, selected.rollNo);
+      const { rollNo } = await assignSectionToEnrollment(enrollmentId, section);
+      toast({
+        title: "Section Assigned",
+        description: `${selected.name} assigned to Grade ${section.grade} – Section ${section.name}. Alphabetical Roll No: ${rollNo}`,
+      });
       setPending((prev) => prev.filter((p) => p.student.id !== selected.id));
       setSelected(null);
       setSelectedEnrollmentId("");
       setAvailableSections([]);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Assignment failed");
+      toast({
+        title: "Assignment Failed",
+        description: err instanceof Error ? err.message : "Assignment failed",
+        variant: "destructive",
+      });
     } finally {
       setAssigning(false);
     }

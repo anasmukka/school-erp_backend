@@ -189,8 +189,8 @@ export default function Subjects() {
                 value={form.category}
                 onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as Subject["category"] }))}
               >
-                <option value="scholastic">Scholastic (marks / exams)</option>
-                <option value="co-scholastic">Co-scholastic (grade-only)</option>
+                <option value="scholastic">Scholastic</option>
+                <option value="co-scholastic">Co-scholastic / Activity</option>
               </select>
             </div>
             <div className="space-y-1.5">

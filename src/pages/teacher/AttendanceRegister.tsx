@@ -308,7 +308,9 @@ export default function AttendanceRegister() {
       setLoadingData(true);
 
       try {
-        const nextStudents = sortStudents(await loadStudentsForSection(selectedSectionId));
+        const startYear = selectedMonth >= 5 ? selectedYear : selectedYear - 1;
+        const targetSessionName = `${startYear}-${String(startYear + 1).slice(-2)}`;
+        const nextStudents = sortStudents(await loadStudentsForSection(selectedSectionId, targetSessionName));
         setStudents(nextStudents);
 
         if (nextStudents.length === 0) {

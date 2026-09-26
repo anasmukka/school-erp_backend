@@ -203,7 +203,7 @@ export default function AcademicYears() {
               <Input
                 value={form.notes}
                 onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-                placeholder="Promotion, fee plan, or exam cycle notes"
+                placeholder="Promotion, academic plan, or exam cycle notes"
               />
             </div>
             <DialogFooter>

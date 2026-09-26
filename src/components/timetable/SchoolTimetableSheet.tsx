@@ -68,9 +68,9 @@ export default function SchoolTimetableSheet({
   slots,
   classLabel,
   sectionLabel,
-  schoolName = "Prestige International School",
+  schoolName = "Prestige International School & Pre-University College",
   sessionLabel,
-  logoUrl,
+  logoUrl = "/prestige_logo.png",
   generatedAt,
   className = "",
 }: SchoolTimetableSheetProps) {

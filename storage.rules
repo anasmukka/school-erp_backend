@@ -1,0 +1,30 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Printing order file attachments
+    match /printing-orders/{fileName} {
+      // Authenticated users (teachers, HODs, printing, admin) can read attachments
+      allow read: if request.auth != null;
+      // Staff and Admin can upload attachments up to 30MB
+      allow write: if request.auth != null && request.resource.size < 30 * 1024 * 1024;
+    }
+
+    // Student and Staff photos & avatars (Max 5MB images)
+    match /photos/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    // Official School Signatures & Seals (Max 2MB images)
+    match /signatures/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.resource.size < 2 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    // Default rules for other school media (Max 15MB)
+    match /{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.resource.size < 15 * 1024 * 1024;
+    }
+  }
+}

@@ -1,0 +1,348 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return isSignedIn() ? getUserData().role : '';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserRole() == 'admin';
+    }
+
+    function isPrintingDept() {
+      return isSignedIn() && getUserRole() == 'printing';
+    }
+
+    function isOperations() {
+      return isSignedIn() && (getUserRole() in ['admin', 'operations']);
+    }
+
+    function isStaff() {
+      return isSignedIn() && (getUserRole() in ['admin', 'hod', 'teacher', 'accountant']);
+    }
+
+    // ==========================================
+    // 1. PRINTING REQUESTS (ISOLATED WORKFLOW)
+    // ==========================================
+    match /printingRequests/{orderId} {
+      allow read: if isSignedIn() && (
+        isOperations() ||
+        isPrintingDept() ||
+        resource.data.requesterId == request.auth.uid
+      );
+
+      allow create: if isSignedIn() && (isOperations() || isStaff());
+
+      allow update: if isSignedIn() && (
+        isOperations() ||
+        isPrintingDept() ||
+        (resource.data.requesterId == request.auth.uid && resource.data.status == 'pending')
+      );
+
+      allow delete: if isOperations() || (isSignedIn() && resource.data.requesterId == request.auth.uid && resource.data.status == 'pending');
+    }
+
+    // ==========================================
+    // 2. LIBRARY COLLECTIONS
+    // ==========================================
+    match /libraryBooks/{bookId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /libraryCopies/{copyId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /libraryTransactions/{txId} {
+      allow read: if isSignedIn() && !isPrintingDept() && (
+        isOperations() ||
+        isStaff() ||
+        resource.data.memberId == request.auth.uid
+      );
+      allow write: if isOperations();
+    }
+
+    match /librarySettings/{settingId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    // ==========================================
+    // 3. INVENTORY, UNIFORMS & TEXTBOOKS
+    // ==========================================
+    match /inventoryItems/{itemId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /inventoryMovements/{movId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow create: if isOperations();
+      allow update, delete: if false; // Immutable audit log
+    }
+
+    match /uniformItems/{uniformId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /uniformIssues/{issueId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /textbookItems/{textbookId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    match /bookDistributions/{distId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isOperations();
+    }
+
+    // ==========================================
+    // 4. CENTRAL AUDIT LOGS
+    // ==========================================
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false; // Immutable audit trail
+    }
+
+    // ==========================================
+    // 5. EXISTING COLLECTIONS - ISOLATED FROM PRINTING & OPERATIONS
+    // ==========================================
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isStaff());
+      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+    }
+
+    match /students/{studentId} {
+      // Operations needs read access to search student names for library circulation and uniform issues
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin();
+    }
+
+    match /admissions/{admissionId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /enrollments/{enrollmentId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /feePayments/{paymentId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
+        isAdmin() ||
+        getUserRole() == 'accountant' ||
+        resource.data.studentId == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid ||
+        (getUserRole() == 'parent' && resource.data.studentId in getUserData().linkedStudentUids)
+      );
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant') ||
+        (isSignedIn() && getUserRole() == 'student' && request.resource.data.paymentMode == 'online' && (
+          request.resource.data.studentId == request.auth.uid ||
+          request.resource.data.studentUid == request.auth.uid ||
+          request.resource.data.recordedBy == request.auth.uid
+        ));
+    }
+
+    match /feeStructures/{feeId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+    }
+
+    match /academicSessions/{sessionId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin();
+    }
+
+    match /examSchedules/{scheduleId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /notices/{noticeId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /sections/{sectionId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin();
+    }
+
+    match /subjectAssignments/{assignmentId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /signatures/{sigId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == sigId);
+    }
+
+    // ==========================================
+    // 6. ACADEMIC STRUCTURE PLANNER & RESULTS ENGINE
+    // ==========================================
+    match /academicStructures/{structureId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin();
+    }
+
+    match /academicStructureVersions/{versionId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin();
+    }
+
+    match /marksEntries/{entryId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
+        isAdmin() ||
+        getUserRole() in ['hod', 'teacher']
+      );
+      allow create, update: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher']);
+      allow delete: if isAdmin();
+    }
+
+    match /publishedReportCards/{reportCardId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
+        isAdmin() ||
+        getUserRole() in ['hod', 'teacher'] ||
+        (getUserRole() == 'student' && (
+          resource.data.studentUid == getUserData().studentUid ||
+          resource.data.studentId == request.auth.uid ||
+          resource.data.studentDocId == request.auth.uid
+        )) ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentUid in getUserData().linkedStudentUids ||
+          resource.data.studentId in getUserData().linkedStudentUids
+        ))
+      );
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    // ==========================================
+    // 7. EVENTS & SCHOOL CALENDAR
+    // ==========================================
+    match /eventTypes/{typeId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn() && !isPrintingDept();
+      allow write: if isAdmin();
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.recipientTeacherId == request.auth.uid ||
+        (resource.data.recipientTeacherId != null && getUserRole() == 'teacher') ||
+        resource.data.audienceType == 'all' ||
+        (resource.data.audienceType == 'teachers' && getUserRole() in ['teacher', 'hod']) ||
+        (resource.data.audienceType == 'students' && getUserRole() == 'student') ||
+        (resource.data.audienceType == 'parents' && getUserRole() == 'parent') ||
+        isAdmin()
+      );
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.recipientTeacherId == request.auth.uid ||
+        isAdmin()
+      );
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    // ==========================================
+    // 8. HALL TICKETS & FEE-BASED EXAM ELIGIBILITY
+    // ==========================================
+    match /hallTicketSettings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /hallTicketRules/{ruleId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /hallTicketBypasses/{bypassId} {
+      allow read: if isSignedIn() && !isPrintingDept() && (
+        isAdmin() ||
+        getUserRole() in ['hod', 'teacher', 'accountant'] ||
+        (getUserRole() == 'student' && (
+          resource.data.studentId == request.auth.uid ||
+          resource.data.studentUid == request.auth.uid
+        )) ||
+        (getUserRole() == 'parent' && resource.data.studentId in getUserData().linkedStudentUids)
+      );
+      allow create: if isSignedIn() && (isAdmin() || getUserRole() == 'accountant');
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /hallTickets/{ticketId} {
+      allow read: if isSignedIn() && !isPrintingDept() && (
+        isAdmin() ||
+        getUserRole() in ['hod', 'teacher', 'accountant'] ||
+        (getUserRole() == 'student' && (
+          resource.data.studentId == request.auth.uid ||
+          resource.data.studentUid == request.auth.uid ||
+          resource.data.studentDocId == request.auth.uid
+        )) ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentId in getUserData().linkedStudentUids ||
+          resource.data.studentUid in getUserData().linkedStudentUids
+        ))
+      );
+      allow write: if isAdmin();
+    }
+
+    match /paymentIntents/{intentId} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        getUserRole() == 'accountant' ||
+        resource.data.studentId == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid
+      );
+      allow create: if isSignedIn() && (
+        isAdmin() ||
+        getUserRole() == 'accountant' ||
+        request.resource.data.studentId == request.auth.uid ||
+        request.resource.data.studentUid == request.auth.uid
+      );
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        getUserRole() == 'accountant' ||
+        resource.data.studentId == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}
+
+

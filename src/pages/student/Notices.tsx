@@ -5,8 +5,9 @@ import { collection, getDocs, onSnapshot, query, where } from "firebase/firestor
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { Badge } from "@/components/ui/badge";
 import { HodNotice, Student } from "@/lib/types";
-import { CalendarDays, Image as ImageIcon, Loader2, RefreshCcw } from "lucide-react";
+import { CalendarDays, Image as ImageIcon, Loader2, RefreshCcw, AlertTriangle } from "lucide-react";
 
 export default function StudentNotices() {
   const { appUser } = useAuth();
@@ -41,23 +42,30 @@ export default function StudentNotices() {
   }, [appUser]);
 
   useEffect(() => {
-    if (!student?.grade) {
+    if (!student) {
       setRecords([]);
       return () => {};
     }
 
-    const q = query(
-      collection(db, "notices"),
-      where("grade", "==", student.grade),
-      where("type", "==", "general"),
-    );
-
     const unsub = onSnapshot(
-      q,
+      collection(db, "notices"),
       (snap) => {
-        const next = snap.docs.map((d) => ({ id: d.id, ...d.data() } as HodNotice));
-        next.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-        setRecords(next);
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as HodNotice));
+        // Filter notices targeted to this student
+        const relevant = list.filter((n) => {
+          // Audience check
+          if (n.targetAudience && n.targetAudience !== "all" && n.targetAudience !== "students") {
+            return false;
+          }
+          // Grade check
+          if (n.grade && n.grade !== "all" && student.grade && n.grade !== student.grade) {
+            return false;
+          }
+          return true;
+        });
+
+        relevant.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+        setRecords(relevant);
       },
       () => {
         /* ignore */
@@ -65,10 +73,10 @@ export default function StudentNotices() {
     );
 
     return unsub;
-  }, [student?.grade]);
+  }, [student?.grade, student?.id]);
 
   const headerLabel = useMemo(() => {
-    const gradeLabel = student?.grade ? `Grade ${student.grade}` : "Notices";
+    const gradeLabel = student?.grade ? `Grade ${student.grade} & School Notices` : "School Notices";
     return gradeLabel;
   }, [student?.grade]);
 
@@ -125,15 +133,42 @@ export default function StudentNotices() {
           <CardContent className="pt-6">
             <div className="space-y-3">
               {records.map((notice) => (
-                <div key={notice.id} className="rounded-2xl border border-border bg-white/85 px-4 py-4">
+                <div
+                  key={notice.id}
+                  className={`rounded-2xl border px-4 py-4 ${
+                    notice.priority === "urgent"
+                      ? "border-rose-300 bg-rose-50/20"
+                      : "border-border bg-white/85"
+                  }`}
+                >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-slate-900 truncate">
-                        {notice.title?.trim() ? notice.title : "Notice"}
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-slate-900 truncate">
+                          {notice.title?.trim() ? notice.title : "Notice"}
+                        </p>
+                        {notice.priority === "urgent" && (
+                          <Badge className="bg-rose-600 text-white text-[10px] px-1.5 py-0 h-4">
+                            Urgent
+                          </Badge>
+                        )}
+                        {notice.priority === "important" && (
+                          <Badge className="bg-amber-600 text-white text-[10px] px-1.5 py-0 h-4">
+                            Important
+                          </Badge>
+                        )}
+                        {notice.type === "exam_schedule" && (
+                          <Badge variant="outline" className="text-[10px] border-indigo-300 bg-indigo-50 text-indigo-700 px-1.5 py-0 h-4">
+                            Exam Timetable
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        {notice.authorRole === "admin" ? "School Administration" : (notice.authorName || "Section Head")}
                       </p>
                       <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">{notice.message}</p>
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-[11px] text-muted-foreground whitespace-nowrap">
                       {notice.createdAt ? new Date(notice.createdAt).toLocaleDateString("en-IN") : ""}
                     </span>
                   </div>

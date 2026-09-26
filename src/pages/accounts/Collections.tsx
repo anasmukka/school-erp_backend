@@ -243,7 +243,7 @@ export default function Collections() {
 
     try {
       const receiptNo = `RC-${Date.now()}`;
-      await addDoc(collection(db, "feePayments"), {
+      const paymentData = {
         academicSession: collectionStructure.academicSession,
         grade: collectionStructure.grade,
         structureId: collectionStructure.id,
@@ -258,11 +258,29 @@ export default function Collections() {
         paidAt: paymentForm.paidAt,
         recordedBy: appUser?.id ?? "",
         receiptNo,
-      });
+      };
 
+      const docRef = await addDoc(collection(db, "feePayments"), paymentData);
+
+      // Log audit
+      import("@/lib/audit").then((m) =>
+        m.logAuditEvent({
+          userId: appUser?.id || "accounts",
+          userName: appUser?.name || "Accounts User",
+          role: (appUser?.role as any) || "accountant",
+          action: "create",
+          entity: "printing",
+          entityId: docRef.id,
+          details: `Manual Fee Payment: ₹${amount} received from ${paymentStudent.name} (${paymentData.installmentLabel}) via ${paymentForm.paymentMode} - Receipt: ${receiptNo}`,
+          metadata: { receiptNo, amount, studentId: paymentStudent.id, installmentId: paymentForm.installmentId },
+        })
+      ).catch(() => {});
+
+      setReceiptPayment({ id: docRef.id, ...paymentData });
+      setReceiptOpen(true);
       setPaymentOpen(false);
       setPaymentStudent(null);
-      setPageMessage(`Payment recorded for ${paymentStudent.name}.`);
+      setPageMessage(`Payment of Rs ${amount} recorded for ${paymentStudent.name}. Receipt generated: ${receiptNo}`);
       await loadCollections(collectionStructure);
     } catch (error) {
       console.error(error);

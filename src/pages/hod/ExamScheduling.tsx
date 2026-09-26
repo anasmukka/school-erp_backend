@@ -1,725 +1,1148 @@
-import { useEffect, useState, useCallback } from "react";
-import {
-  collection, query, where, getDocs, addDoc, deleteDoc, doc,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { Subject } from "@/lib/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAcademicSession } from "@/contexts/AcademicSessionContext";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  onSnapshot,
+} from "firebase/firestore";
+import type { Subject, ExamSchedule, ExamSubjectEntry, ExamScheduleStatus } from "@/lib/types";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
-  ChevronRight, Calendar, CheckCircle, FileText, Bell, ArrowLeft,
-  ClipboardList, Plus, Loader2, ChevronDown, ChevronUp, CalendarClock,
-  RefreshCw, Pencil, CalendarX,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Calendar,
+  CalendarDays,
+  CheckCircle2,
+  Clock,
+  Download,
+  Edit3,
+  Eye,
+  FileText,
+  Loader2,
+  Plus,
+  Send,
+  Trash2,
+  AlertCircle,
+  XCircle,
+  HelpCircle,
 } from "lucide-react";
+import jsPDF from "jspdf";
+import {
+  getActiveStructureForGrade,
+  AcademicStructure,
+  AcademicStructureVersion,
+  DefinedExam,
+} from "@/lib/academicStructure";
+import { AlertTriangle } from "lucide-react";
 
-const EXAM_TYPES = [
-  { key: "Unit Test 1",  color: "bg-blue-50 border-blue-200 text-blue-700",       dot: "bg-blue-500"   },
-  { key: "Term 1",      color: "bg-violet-50 border-violet-200 text-violet-700",  dot: "bg-violet-500" },
-  { key: "Unit Test 2", color: "bg-orange-50 border-orange-200 text-orange-700",  dot: "bg-orange-500" },
-  { key: "Final Exam",  color: "bg-red-50 border-red-200 text-red-700",           dot: "bg-red-500"    },
-];
-
-const EXAM_TYPE_COLOR: Record<string, string> = {
-  "Unit Test 1": "bg-blue-100 text-blue-700 border-blue-200",
-  "Term 1": "bg-violet-100 text-violet-700 border-violet-200",
-  "Unit Test 2": "bg-orange-100 text-orange-700 border-orange-200",
-  "Final Exam": "bg-red-100 text-red-700 border-red-200",
-};
-
-type Tab = "upcoming" | "list" | "new";
-
-type WizardStep =
-  | { kind: "exam-type" }
-  | { kind: "grades"; examType: string }
-  | { kind: "schedule"; examType: string; grade: string; existingIds: string[] }
-  | { kind: "done"; examType: string; grade: string; exams: SavedExam[] };
-
-interface SavedExam {
-  subjectId: string;
-  subjectName: string;
-  date: string;
-}
-
-interface ScheduleGroup {
-  examType: string;
-  grade: string;
-  exams: SavedExam[];
-  docIds: string[];
-}
-
-export default function ExamScheduling() {
+export default function HodExamScheduling() {
   const { appUser } = useAuth();
+  const { workingSession, activeSession, sessions } = useAcademicSession();
+  const { toast } = useToast();
 
-  const [tab, setTab] = useState<Tab>("upcoming");
-  const [wizardStep, setWizardStep] = useState<WizardStep>({ kind: "exam-type" });
-
-  const [hodGrades, setHodGrades] = useState<string[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [dates, setDates] = useState<Record<string, string>>({});
+  const [schedules, setSchedules] = useState<ExamSchedule[]>([]);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [errors, setErrors] = useState<string[]>([]);
 
-  const [existingSchedules, setExistingSchedules] = useState<ScheduleGroup[]>([]);
-  const [loadingSchedules, setLoadingSchedules] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // Form state
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedSessionName, setSelectedSessionName] = useState<string>("");
+  const [selectedExamType, setSelectedExamType] = useState<string>("");
+  const [selectedExamId, setSelectedExamId] = useState<string>("");
+  const [selectedTermId, setSelectedTermId] = useState<string>("term_1");
+  const [selectedGrade, setSelectedGrade] = useState<string>("");
+  const [termFilter, setTermFilter] = useState<string>("all");
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [examEntries, setExamEntries] = useState<Record<string, ExamSubjectEntry>>({});
+  const [formError, setFormError] = useState<string>("");
 
-  const [postponeTarget, setPostponeTarget] = useState<ScheduleGroup | null>(null);
-  const [postponeDates, setPostponeDates] = useState<Record<string, string>>({});
-  const [postponeSaving, setPostponeSaving] = useState(false);
+  // Academic Structure State
+  const [applicableStructure, setApplicableStructure] = useState<{
+    structure: AcademicStructure;
+    version: AcademicStructureVersion;
+  } | null>(null);
+  const [structureLoading, setStructureLoading] = useState(false);
+  const [definedExams, setDefinedExams] = useState<DefinedExam[]>([]);
 
-  const loadExistingSchedules = useCallback(async () => {
-    if (!appUser?.id) return;
-    setLoadingSchedules(true);
-    try {
-      const snap = await getDocs(
-        query(collection(db, "exams"), where("hodId", "==", appUser.id))
-      );
-      const grouped: Record<string, ScheduleGroup> = {};
-      snap.docs.forEach((d) => {
-        const data = d.data();
-        const key = `${data.examType}__${data.grade}`;
-        if (!grouped[key]) {
-          grouped[key] = { examType: data.examType, grade: data.grade, exams: [], docIds: [] };
-        }
-        grouped[key].exams.push({ subjectId: data.subjectId, subjectName: data.subjectName, date: data.date });
-        grouped[key].docIds.push(d.id);
-      });
-      const order = EXAM_TYPES.map((e) => e.key);
-      const sorted = Object.values(grouped).sort((a, b) => {
-        const ei = order.indexOf(a.examType) - order.indexOf(b.examType);
-        return ei !== 0 ? ei : Number(a.grade) - Number(b.grade);
-      });
-      setExistingSchedules(sorted);
-      return sorted;
-    } finally {
-      setLoadingSchedules(false);
+  const availableTerms = useMemo(() => {
+    if (applicableStructure?.version.terms && applicableStructure.version.terms.length > 0) {
+      return applicableStructure.version.terms;
     }
-  }, [appUser?.id]);
+    return [
+      { id: "term_1", name: "Term 1", sequence: 1, workflowStatus: "active" as const },
+      { id: "term_2", name: "Term 2", sequence: 2, workflowStatus: "active" as const },
+    ];
+  }, [applicableStructure]);
+
+  const termFilteredExams = useMemo(() => {
+    return definedExams.filter((e) => {
+      if (e.termId) return e.termId === selectedTermId;
+      if (selectedTermId === "term_1") return e.term === "term1";
+      if (selectedTermId === "term_2") return e.term === "term2";
+      return true;
+    });
+  }, [definedExams, selectedTermId]);
 
   useEffect(() => {
+    if (termFilteredExams.length > 0) {
+      const match = termFilteredExams.find((e) => e.id === selectedExamId);
+      if (!match) {
+        setSelectedExamId(termFilteredExams[0].id);
+        setSelectedExamType(termFilteredExams[0].name);
+      }
+    }
+  }, [termFilteredExams, selectedExamId]);
+
+  // Details Modal
+  const [viewSchedule, setViewSchedule] = useState<ExamSchedule | null>(null);
+
+  const assignedGrades = useMemo(() => {
+    return (appUser?.assignedGrades ?? []).map(String).filter(Boolean);
+  }, [appUser]);
+
+  // Current session name default
+  const effectiveSessionName =
+    selectedSessionName || workingSession?.name || activeSession?.name || "2026-27";
+
+  // Real-time listener for schedules assigned to HOD
+  useEffect(() => {
     if (!appUser) return;
-    const grades = (appUser.assignedGrades as string[] | undefined) ?? [];
-    setHodGrades(grades.sort((a, b) => Number(a) - Number(b)));
-    loadExistingSchedules();
-  }, [appUser, loadExistingSchedules]);
+    setLoading(true);
 
-  const loadSubjects = async (grade: string) => {
-    const snap = await getDocs(query(collection(db, "subjects"), where("grade", "==", grade)));
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Subject));
+    const q = query(
+      collection(db, "examSchedules"),
+      where("hodId", "==", appUser.id),
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map(
+          (d) => ({ id: d.id, ...d.data() } as ExamSchedule),
+        );
+        list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+        setSchedules(list);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error loading exam schedules:", err);
+        setLoading(false);
+      },
+    );
+
+    return unsubscribe;
+  }, [appUser?.id]);
+
+  // Load active academic structure & subjects whenever selected grade changes in form
+  useEffect(() => {
+    if (!selectedGrade) {
+      setSubjects([]);
+      setApplicableStructure(null);
+      setDefinedExams([]);
+      return;
+    }
+    let isMounted = true;
+    setSubjectsLoading(true);
+    setStructureLoading(true);
+
+    const sessId = workingSession?.id || activeSession?.id;
+
+    Promise.all([
+      getDocs(query(collection(db, "subjects"), where("grade", "==", selectedGrade))),
+      getActiveStructureForGrade(selectedGrade, sessId),
+    ])
+      .then(([subjSnap, structRes]) => {
+        if (!isMounted) return;
+        const list = subjSnap.docs
+          .map((d) => ({ id: d.id, ...d.data() } as Subject))
+          .filter((s) => s.category !== "co-scholastic"); // only scholastic subjects get formal exams
+        list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name));
+        setSubjects(list);
+
+        setApplicableStructure(structRes);
+        if (structRes && structRes.version.exams.length > 0) {
+          setDefinedExams(structRes.version.exams);
+          if (!editingId) {
+            setSelectedExamId(structRes.version.exams[0].id);
+            setSelectedExamType(structRes.version.exams[0].name);
+          }
+        } else {
+          setDefinedExams([]);
+        }
+
+        // Pre-fill exam entries if not editing
+        if (!editingId) {
+          const map: Record<string, ExamSubjectEntry> = {};
+          list.forEach((sub) => {
+            map[sub.id] = {
+              subjectId: sub.id,
+              subjectName: sub.name,
+              date: "",
+              startTime: "09:30",
+              endTime: "12:30",
+              maxMarks: 100,
+              passingMarks: 35,
+            };
+          });
+          setExamEntries(map);
+        }
+      })
+      .catch((err) => {
+        console.error("Error loading subjects or structure:", err);
+        toast({ title: "Failed to load grade configuration", variant: "destructive" });
+      })
+      .finally(() => {
+        if (isMounted) {
+          setSubjectsLoading(false);
+          setStructureLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedGrade, editingId, workingSession?.id, activeSession?.id]);
+
+  const handleOpenCreate = () => {
+    setEditingId(null);
+    setSelectedSessionName(workingSession?.name || activeSession?.name || "2026-27");
+    const initialGrade = assignedGrades[0] || "1";
+    setSelectedGrade(initialGrade);
+    setSelectedTermId("term_1");
+    setFormError("");
+    setDialogOpen(true);
   };
 
-  const goToSchedule = async (examType: string, grade: string) => {
-    const subs = await loadSubjects(grade);
-    setSubjects(subs);
-    setErrors([]);
-
-    let schedules = existingSchedules;
-    if (loadingSchedules) {
-      const fetched = await loadExistingSchedules();
-      schedules = fetched ?? [];
-    }
-
-    const existing = schedules.find((g) => g.examType === examType && g.grade === grade);
-    if (existing) {
-      const prefilled: Record<string, string> = {};
-      existing.exams.forEach((e) => { prefilled[e.subjectId] = e.date; });
-      setDates(prefilled);
-    } else {
-      setDates({});
-    }
-    setWizardStep({ kind: "schedule", examType, grade, existingIds: existing?.docIds ?? [] });
+  const handleOpenEdit = (sched: ExamSchedule) => {
+    setEditingId(sched.id);
+    setSelectedSessionName(sched.academicYear || sched.sessionId);
+    setSelectedTermId(
+      sched.termId ||
+      (sched.examType.toLowerCase().includes("term 2") || sched.examType.toLowerCase().includes("annual") ? "term_2" : "term_1")
+    );
+    setSelectedExamType(sched.examType);
+    setSelectedExamId(sched.definedExamId || "");
+    setSelectedGrade(sched.grade);
+    const map: Record<string, ExamSubjectEntry> = {};
+    sched.exams.forEach((ex) => {
+      map[ex.subjectId] = ex;
+    });
+    setExamEntries(map);
+    setFormError("");
+    setDialogOpen(true);
   };
 
-  const validate = (): boolean => {
-    if (wizardStep.kind !== "schedule") return false;
-    const missing = subjects.filter((s) => !dates[s.id]);
-    if (missing.length > 0) {
-      setErrors(missing.map((s) => s.name));
-      return false;
+  const handleSaveSchedule = async (submitForApproval: boolean) => {
+    setFormError("");
+    if (!applicableStructure) {
+      setFormError(`No active Academic Structure is configured for Grade ${selectedGrade}. Exam scheduling is prohibited until an Academic Structure is activated.`);
+      return;
     }
-    setErrors([]);
-    return true;
-  };
+    const matchedExam = definedExams.find(
+      (e) => e.name === selectedExamType || e.id === selectedExamId
+    );
+    if (!matchedExam) {
+      setFormError(`Selected exam is not defined in Academic Structure "${applicableStructure.structure.name}".`);
+      return;
+    }
+    const examTypeName = matchedExam.name;
+    if (!selectedGrade) {
+      setFormError("Please select a Grade.");
+      return;
+    }
+    if (subjects.length === 0) {
+      setFormError("No subjects configured for this grade. Please add subjects first.");
+      return;
+    }
 
-  const saveExams = async () => {
-    if (wizardStep.kind !== "schedule") return;
-    if (!validate() || !appUser) return;
+    // Validate that each subject has a date
+    const examsList: ExamSubjectEntry[] = [];
+    for (const sub of subjects) {
+      const entry = examEntries[sub.id];
+      if (!entry?.date) {
+        setFormError(`Please set an exam date for "${sub.name}".`);
+        return;
+      }
+      examsList.push({
+        subjectId: sub.id,
+        subjectName: sub.name,
+        date: entry.date,
+        startTime: entry.startTime || "09:30",
+        endTime: entry.endTime || "12:30",
+        maxMarks: Number(entry.maxMarks) || 100,
+        passingMarks: Number(entry.passingMarks) || 35,
+        venue: entry.venue?.trim() || "",
+      });
+    }
+
     setSaving(true);
     try {
-      if (wizardStep.existingIds.length > 0) {
-        await Promise.all(wizardStep.existingIds.map((id) => deleteDoc(doc(db, "exams", id))));
-      }
-      const savedExams: SavedExam[] = [];
-      for (const sub of subjects) {
-        await addDoc(collection(db, "exams"), {
-          examType: wizardStep.examType,
-          grade: wizardStep.grade,
-          subjectId: sub.id,
-          subjectName: sub.name,
-          date: dates[sub.id],
-          hodId: appUser.id,
+      const now = new Date().toISOString();
+      const status: ExamScheduleStatus = submitForApproval ? "pending_approval" : "draft";
+
+      const matchedSession = sessions.find((s) => s.name === selectedSessionName || s.id === selectedSessionName);
+      const sessId = matchedSession?.id || selectedSessionName;
+
+      const termObj = availableTerms.find((t) => t.id === selectedTermId);
+      const termName = termObj?.name || (selectedTermId === "term_2" ? "Term 2" : "Term 1");
+
+      const scheduleData: Omit<ExamSchedule, "id"> = {
+        sessionId: sessId,
+        academicYear: selectedSessionName,
+        examType: examTypeName,
+        definedExamId: matchedExam.id,
+        termId: selectedTermId,
+        termName: termName,
+        structureId: applicableStructure.structure.id,
+        structureVersion: applicableStructure.version.versionNumber,
+        grade: selectedGrade,
+        hodId: appUser?.id || "",
+        hodName: appUser?.name || "HOD",
+        exams: examsList,
+        status,
+        submittedAt: submitForApproval ? now : undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      if (editingId) {
+        await updateDoc(doc(db, "examSchedules", editingId), {
+          sessionId: sessId,
+          academicYear: selectedSessionName,
+          examType: examTypeName,
+          definedExamId: matchedExam.id,
+          termId: selectedTermId,
+          termName: termName,
+          structureId: applicableStructure.structure.id,
+          structureVersion: applicableStructure.version.versionNumber,
+          grade: selectedGrade,
+          exams: examsList,
+          status,
+          submittedAt: submitForApproval ? now : undefined,
+          updatedAt: now,
         });
-        savedExams.push({ subjectId: sub.id, subjectName: sub.name, date: dates[sub.id] });
+        toast({
+          title: submitForApproval ? "Submitted to Principal" : "Schedule Updated",
+          description: submitForApproval
+            ? "Your exam schedule was successfully submitted to the Principal for approval."
+            : "Exam schedule draft updated.",
+        });
+      } else {
+        await addDoc(collection(db, "examSchedules"), scheduleData);
+        toast({
+          title: submitForApproval ? "Submitted to Principal" : "Draft Saved",
+          description: submitForApproval
+            ? "Your exam schedule has been submitted for Principal review."
+            : "Exam schedule draft saved.",
+        });
       }
-      await saveNotice(wizardStep.grade, wizardStep.examType, savedExams);
-      await loadExistingSchedules();
-      setWizardStep({ kind: "done", examType: wizardStep.examType, grade: wizardStep.grade, exams: savedExams });
+
+      setDialogOpen(false);
     } catch (err: any) {
-      alert(err.message);
+      console.error("Failed to save schedule:", err);
+      setFormError(err?.message || "Failed to save exam schedule.");
     } finally {
       setSaving(false);
     }
   };
 
-  const saveNotice = async (grade: string, examType: string, exams: SavedExam[]) => {
-    if (!appUser) return;
-    await addDoc(collection(db, "notices"), {
-      type: "exam_schedule",
-      grade,
-      examType,
-      hodId: appUser.id,
-      examDates: exams.map((e) => ({ subjectName: e.subjectName, date: e.date })),
-      message: `${examType} has been scheduled for Grade ${grade}.`,
-      createdAt: new Date().toISOString(),
-    });
-  };
-
-  const handlePostpone = (group: ScheduleGroup) => {
-    const prefilled: Record<string, string> = {};
-    group.exams.forEach((e) => { prefilled[e.subjectId] = e.date; });
-    setPostponeDates(prefilled);
-    setPostponeTarget(group);
-  };
-
-  const savePostpone = async () => {
-    if (!postponeTarget || !appUser) return;
-    setPostponeSaving(true);
+  const handleDelete = async (schedId: string) => {
+    if (!confirm("Are you sure you want to delete this exam schedule?")) return;
     try {
-      await Promise.all(postponeTarget.docIds.map((id) => deleteDoc(doc(db, "exams", id))));
-      const savedExams: SavedExam[] = [];
-      for (const exam of postponeTarget.exams) {
-        await addDoc(collection(db, "exams"), {
-          examType: postponeTarget.examType,
-          grade: postponeTarget.grade,
-          subjectId: exam.subjectId,
-          subjectName: exam.subjectName,
-          date: postponeDates[exam.subjectId] || exam.date,
-          hodId: appUser.id,
-        });
-        savedExams.push({
-          subjectId: exam.subjectId,
-          subjectName: exam.subjectName,
-          date: postponeDates[exam.subjectId] || exam.date,
-        });
-      }
-      await saveNotice(postponeTarget.grade, postponeTarget.examType, savedExams);
-      await loadExistingSchedules();
-      setPostponeTarget(null);
-      setPostponeDates({});
+      await deleteDoc(doc(db, "examSchedules", schedId));
+      toast({ title: "Exam schedule deleted" });
     } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setPostponeSaving(false);
+      toast({ title: "Failed to delete", description: err.message, variant: "destructive" });
     }
   };
 
-  const generatePDF = (examType: string, grade: string, exams: SavedExam[]) => {
-    import("jspdf").then(({ jsPDF }) => {
-      const pdf = new jsPDF();
-      const W = pdf.internal.pageSize.getWidth();
-      pdf.setFillColor(79, 70, 229); pdf.rect(0, 0, W, 40, "F");
-      pdf.setTextColor(255, 255, 255); pdf.setFontSize(20); pdf.setFont("helvetica", "bold");
-      pdf.text("PRESTIGE INTERNATIONAL SCHOOL", W / 2, 16, { align: "center" });
-      pdf.setFontSize(11); pdf.setFont("helvetica", "normal");
-      pdf.text("Examination Timetable", W / 2, 25, { align: "center" });
-      pdf.setFontSize(9); pdf.text(`${examType} - Grade ${grade}`, W / 2, 34, { align: "center" });
-      pdf.setTextColor(100); pdf.setFontSize(9); pdf.setFont("helvetica", "normal");
-      pdf.text(`Generated: ${new Date().toLocaleDateString("en-US", { day: "2-digit", month: "long", year: "numeric" })}`, W / 2, 50, { align: "center" });
-      pdf.setFillColor(245, 244, 255); pdf.rect(14, 56, W - 28, 10, "F");
-      pdf.setDrawColor(200, 196, 255); pdf.setLineWidth(0.3); pdf.rect(14, 56, W - 28, 10, "D");
-      pdf.setTextColor(60, 50, 160); pdf.setFontSize(9.5); pdf.setFont("helvetica", "bold");
-      pdf.text("Subject", 20, 63); pdf.text("Exam Date", 120, 63); pdf.text("Day", 170, 63);
-      const sorted = [...exams].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      let y = 75;
-      sorted.forEach((exam, i) => {
-        if (i % 2 === 0) { pdf.setFillColor(252, 252, 255); pdf.rect(14, y - 6, W - 28, 10, "F"); }
-        pdf.setDrawColor(230); pdf.setLineWidth(0.2); pdf.line(14, y + 4, W - 14, y + 4);
-        const d = new Date(exam.date);
-        pdf.setFont("helvetica", "normal"); pdf.setTextColor(30); pdf.setFontSize(9);
-        pdf.text(exam.subjectName, 20, y);
-        pdf.text(d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), 120, y);
-        pdf.text(d.toLocaleDateString("en-US", { weekday: "long" }), 170, y);
-        y += 10; if (y > 270) { pdf.addPage(); y = 20; }
+  const handleDirectSubmit = async (sched: ExamSchedule) => {
+    try {
+      await updateDoc(doc(db, "examSchedules", sched.id), {
+        status: "pending_approval",
+        submittedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       });
-      pdf.setFillColor(79, 70, 229); pdf.rect(0, 285, W, 12, "F");
-      pdf.setTextColor(255, 255, 255); pdf.setFontSize(7);
-      pdf.text("This is an official document generated by Prestige International School.", W / 2, 292, { align: "center" });
-      pdf.save(`Exam_Timetable_${examType.replace(/\s+/g, "_")}_Grade_${grade}.pdf`);
-    });
+      toast({
+        title: "Submitted for Approval",
+        description: "Schedule submitted to Principal for review.",
+      });
+    } catch (err: any) {
+      toast({ title: "Submit failed", description: err.message, variant: "destructive" });
+    }
   };
 
-  const today = new Date().toISOString().split("T")[0];
-  const upcomingExams = existingSchedules
-    .flatMap((g) =>
-      g.exams
-        .filter((e) => e.date >= today)
-        .map((e) => ({ ...e, examType: g.examType, grade: g.grade }))
-    )
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  const ScheduleCard = ({ group }: { group: ScheduleGroup }) => {
-    const key = `${group.examType}__${group.grade}`;
-    const expanded = expandedGroups.has(key);
-    const isPostponing = postponeTarget?.examType === group.examType && postponeTarget?.grade === group.grade;
-    const colorClass = EXAM_TYPE_COLOR[group.examType] ?? "bg-muted text-muted-foreground border-border";
-
-    return (
-      <Card>
-        <CardContent className="pt-4 pb-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className={`text-xs px-2.5 py-1 rounded-full border font-semibold ${colorClass}`}>
-                {group.examType}
-              </span>
-              <span className="font-semibold">Grade {group.grade}</span>
-              <span className="text-xs text-muted-foreground">{group.exams.length} subject(s)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" className="gap-1 text-xs"
-                onClick={() => { setTab("new"); goToSchedule(group.examType, group.grade); }}>
-                <Pencil size={12} /> Edit
-              </Button>
-              <Button size="sm" variant="outline" className="gap-1 text-xs text-orange-600 border-orange-200 hover:bg-orange-50"
-                onClick={() => isPostponing ? setPostponeTarget(null) : handlePostpone(group)}>
-                <CalendarClock size={12} /> {isPostponing ? "Cancel" : "Postpone"}
-              </Button>
-              <button onClick={() => {
-                setExpandedGroups((prev) => {
-                  const next = new Set(prev);
-                  next.has(key) ? next.delete(key) : next.add(key);
-                  return next;
-                });
-              }} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
-                {expanded || isPostponing ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              </button>
-            </div>
-          </div>
-
-          {isPostponing && (
-            <div className="mt-4 pt-4 border-t border-orange-200 space-y-3">
-              <p className="text-sm font-semibold text-orange-700">Postpone — update dates for each subject:</p>
-              {group.exams.map((exam) => (
-                <div key={exam.subjectId} className="flex items-center justify-between gap-4">
-                  <span className="text-sm font-medium w-32 shrink-0">{exam.subjectName}</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      was: {new Date(exam.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                    </span>
-                    <Input
-                      type="date"
-                      className="flex-1 h-8 text-sm"
-                      value={postponeDates[exam.subjectId] ?? exam.date}
-                      onChange={(e) => setPostponeDates((d) => ({ ...d, [exam.subjectId]: e.target.value }))}
-                    />
-                  </div>
-                </div>
-              ))}
-              <div className="flex gap-2 pt-1">
-                <Button size="sm" className="gap-1" onClick={savePostpone} disabled={postponeSaving}>
-                  {postponeSaving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
-                  {postponeSaving ? "Saving..." : "Save New Dates"}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setPostponeTarget(null)}>Cancel</Button>
-              </div>
-            </div>
-          )}
-
-          {expanded && !isPostponing && (
-            <div className="mt-3 pt-3 border-t border-border space-y-1">
-              {[...group.exams]
-                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                .map((exam) => (
-                  <div key={exam.subjectId} className="flex items-center justify-between text-sm py-1.5 border-b border-border last:border-0">
-                    <span className="font-medium">{exam.subjectName}</span>
-                    <span className="text-muted-foreground">
-                      {new Date(exam.date).toLocaleDateString("en-US", {
-                        weekday: "short", month: "short", day: "numeric", year: "numeric",
-                      })}
-                    </span>
-                  </div>
-                ))}
-              <div className="flex gap-2 pt-2">
-                <Button size="sm" variant="outline" className="gap-1 text-xs"
-                  onClick={() => generatePDF(group.examType, group.grade, group.exams)}>
-                  <FileText size={12} /> PDF
-                </Button>
-                <Button size="sm" variant="outline" className="gap-1 text-xs"
-                  onClick={async () => {
-                    await saveNotice(group.grade, group.examType, group.exams);
-                    alert(`Notice sent to Grade ${group.grade} students on their dashboard.`);
-                  }}>
-                  <Bell size={12} /> Send Notice
-                </Button>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+  // Generate PDF Timetable
+  const handleDownloadPDF = (sched: ExamSchedule) => {
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const sorted = [...sched.exams].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
+
+    // Title & Header
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.setTextColor(30, 41, 59);
+    doc.text("EXAMINATION TIMETABLE", 105, 22, { align: "center" });
+
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Academic Session: ${sched.academicYear || sched.sessionId}`, 105, 29, { align: "center" });
+
+    // Meta Box
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(15, 36, 180, 24, 3, 3, "FD");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Exam: ${sched.examType}`, 22, 43);
+    doc.text(`Term: ${sched.termName || (sched.termId === "term_2" ? "Term 2" : "Term 1")}`, 22, 49);
+    doc.text(`Grade: Grade ${sched.grade}`, 22, 55);
+
+    doc.text(`Section Head: ${sched.hodName || "HOD"}`, 120, 45);
+    doc.text(`Status: ${sched.status.toUpperCase().replace("_", " ")}`, 120, 52);
+
+    // Table Header
+    let y = 68;
+    doc.setFillColor(79, 70, 229);
+    doc.rect(15, y, 180, 10, "F");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.text("DATE", 20, y + 6.5);
+    doc.text("DAY", 52, y + 6.5);
+    doc.text("TIME", 80, y + 6.5);
+    doc.text("SUBJECT", 120, y + 6.5);
+    doc.text("MAX MARKS", 168, y + 6.5);
+
+    // Table Rows
+    y += 10;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+
+    sorted.forEach((item, index) => {
+      const d = new Date(item.date);
+      const dateStr = d.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+      const dayStr = d.toLocaleDateString("en-IN", { weekday: "short" });
+      const timeStr = item.startTime && item.endTime ? `${item.startTime} - ${item.endTime}` : "—";
+
+      if (index % 2 === 0) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(15, y, 180, 9, "F");
+      }
+      doc.setDrawColor(241, 245, 249);
+      doc.line(15, y + 9, 195, y + 9);
+
+      doc.setTextColor(30, 41, 59);
+      doc.text(dateStr, 20, y + 6);
+      doc.text(dayStr, 52, y + 6);
+      doc.text(timeStr, 80, y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.text(item.subjectName, 120, y + 6);
+      doc.setFont("helvetica", "normal");
+      doc.text(String(item.maxMarks || 100), 175, y + 6);
+
+      y += 9;
+    });
+
+    // Important Instructions
+    y += 12;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(30, 41, 59);
+    doc.text("Important Instructions for Students:", 15, y);
+
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("1. Students must occupy their examination seats 15 minutes prior to start time.", 15, y);
+    doc.text("2. Identity cards are mandatory for entry to the examination hall.", 15, y + 5);
+    doc.text("3. Electronic devices, smartwatches, or study materials are strictly prohibited.", 15, y + 10);
+
+    // Signatures
+    y += 35;
+    doc.setDrawColor(148, 163, 184);
+    doc.line(25, y, 75, y);
+    doc.line(135, y, 185, y);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(51, 65, 85);
+    doc.text("Section Head (HOD)", 50, y + 6, { align: "center" });
+    doc.text("Principal / Controller of Exams", 160, y + 6, { align: "center" });
+
+    doc.save(`${sched.examType}_Grade_${sched.grade}_Timetable.pdf`);
+    toast({ title: "Timetable Downloaded", description: "PDF schedule downloaded successfully." });
   };
+
+  const getStatusBadge = (status: ExamScheduleStatus) => {
+    switch (status) {
+      case "approved":
+        return (
+          <Badge className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1 font-medium">
+            <CheckCircle2 size={12} /> Approved by Principal
+          </Badge>
+        );
+      case "pending_approval":
+        return (
+          <Badge className="bg-amber-500 hover:bg-amber-600 text-white gap-1 font-medium">
+            <Clock size={12} /> Pending Principal Approval
+          </Badge>
+        );
+      case "rejected":
+        return (
+          <Badge className="bg-rose-600 hover:bg-rose-700 text-white gap-1 font-medium">
+            <XCircle size={12} /> Changes Requested
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="outline" className="border-slate-300 bg-slate-100 text-slate-700 gap-1 font-medium">
+            Draft
+          </Badge>
+        );
+    }
+  };
+
+  const displayedSchedules = useMemo(() => {
+    return schedules.filter((s) => {
+      if (termFilter === "all") return true;
+      if (termFilter === "term_1") return !s.termId || s.termId === "term_1";
+      if (termFilter === "term_2") return s.termId === "term_2";
+      return s.termId === termFilter;
+    });
+  }, [schedules, termFilter]);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-5">
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Exam Scheduling</h1>
-          <p className="text-muted-foreground text-sm">Manage and schedule exams for your grades</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+            <CalendarDays className="h-6 w-6 text-primary" />
+            Exam Scheduling
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Schedule subject timetables for your assigned grades and submit to Principal for approval.
+          </p>
         </div>
-        <Button
-          size="sm" variant="outline" className="gap-1.5"
-          onClick={loadExistingSchedules} disabled={loadingSchedules}
-        >
-          <RefreshCw size={14} className={loadingSchedules ? "animate-spin" : ""} />
-          Refresh
+        <Button onClick={handleOpenCreate} className="gap-2 shrink-0">
+          <Plus size={16} /> Schedule Exam
         </Button>
       </div>
 
-      {/* Tabs */}
-      {tab !== "new" && (
-        <div className="flex gap-1 mb-6 bg-muted rounded-lg p-1">
-          <button
-            onClick={() => setTab("upcoming")}
-            className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${tab === "upcoming" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            Upcoming Exams {upcomingExams.length > 0 && !loadingSchedules && (
-              <span className="ml-1.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">{upcomingExams.length}</span>
+      {/* Session notice */}
+      <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-xs text-slate-600">
+        <div className="flex items-center gap-2">
+          <Calendar size={14} className="text-primary shrink-0" />
+          <span>
+            Active Academic Session:{" "}
+            <strong className="text-slate-800">{activeSession?.name || "2026-27"}</strong>
+            {workingSession && workingSession.name !== activeSession?.name && (
+              <span className="ml-2 text-primary">
+                (Viewing context: {workingSession.name})
+              </span>
             )}
-          </button>
-          <button
-            onClick={() => setTab("list")}
-            className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${tab === "list" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            All Schedules
-          </button>
-          <Button
-            size="sm" className="gap-1 ml-1"
-            onClick={() => { setTab("new"); setWizardStep({ kind: "exam-type" }); }}
-          >
-            <Plus size={14} /> New
-          </Button>
+          </span>
         </div>
-      )}
+        <span className="text-[11px] text-slate-400">
+          Assigned Grades: {assignedGrades.join(", ") || "None"}
+        </span>
+      </div>
 
-      {/* Upcoming Exams Tab */}
-      {tab === "upcoming" && (
-        <div className="space-y-3">
-          {loadingSchedules ? (
-            <div className="flex items-center justify-center h-40">
-              <Loader2 className="animate-spin text-muted-foreground" size={28} />
-            </div>
-          ) : upcomingExams.length === 0 ? (
-            <Card>
-              <CardContent className="py-16 text-center text-muted-foreground">
-                <CalendarX size={40} className="mx-auto mb-4 opacity-30" />
-                <p className="font-semibold text-lg">No upcoming exams</p>
-                <p className="text-sm mt-1">All scheduled exams are in the past, or none have been scheduled yet.</p>
-                <Button className="mt-4 gap-2" onClick={() => { setTab("new"); setWizardStep({ kind: "exam-type" }); }}>
-                  <Plus size={15} /> Schedule an Exam
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <>
-              {(() => {
-                let lastDate = "";
-                return upcomingExams.map((exam, idx) => {
-                  const dateHeader = exam.date !== lastDate;
-                  lastDate = exam.date;
-                  const d = new Date(exam.date);
-                  const isToday = exam.date === today;
-                  return (
-                    <div key={idx}>
-                      {dateHeader && (
-                        <div className="flex items-center gap-2 mt-4 mb-2 first:mt-0">
-                          <div className={`text-xs font-bold px-2 py-1 rounded ${isToday ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                            {isToday ? "TODAY" : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                          </div>
-                          <div className="h-px flex-1 bg-border" />
-                        </div>
-                      )}
-                      <Card className={isToday ? "border-primary/30 bg-primary/5" : ""}>
-                        <CardContent className="py-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                                <ClipboardList size={14} className="text-muted-foreground" />
-                              </div>
-                              <div>
-                                <p className="font-semibold text-sm">{exam.subjectName}</p>
-                                <p className="text-xs text-muted-foreground">Grade {exam.grade}</p>
-                              </div>
-                            </div>
-                            <span className={`text-xs px-2 py-1 rounded-full border font-semibold ${EXAM_TYPE_COLOR[exam.examType] ?? "bg-muted text-muted-foreground"}`}>
-                              {exam.examType}
-                            </span>
-                          </div>
-                        </CardContent>
-                      </Card>
+      {/* Term Filter Bar */}
+      <div className="flex items-center gap-2 bg-white p-2.5 rounded-lg border border-slate-200">
+        <span className="text-xs font-semibold text-slate-600 mr-1">Filter by Academic Term:</span>
+        <Button
+          variant={termFilter === "all" ? "default" : "outline"}
+          size="sm"
+          className="h-7 text-xs px-3"
+          onClick={() => setTermFilter("all")}
+        >
+          All Terms
+        </Button>
+        <Button
+          variant={termFilter === "term_1" ? "default" : "outline"}
+          size="sm"
+          className="h-7 text-xs px-3"
+          onClick={() => setTermFilter("term_1")}
+        >
+          Term 1
+        </Button>
+        <Button
+          variant={termFilter === "term_2" ? "default" : "outline"}
+          size="sm"
+          className="h-7 text-xs px-3"
+          onClick={() => setTermFilter("term_2")}
+        >
+          Term 2
+        </Button>
+      </div>
+
+      {/* Schedules List */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20 text-slate-400">
+          <Loader2 className="animate-spin h-8 w-8 text-primary" />
+        </div>
+      ) : displayedSchedules.length === 0 ? (
+        <Card className="border-dashed border-2">
+          <CardContent className="py-16 text-center space-y-3">
+            <CalendarDays className="mx-auto h-12 w-12 text-slate-300" />
+            <h3 className="text-base font-semibold text-slate-800">No Exam Schedules Found</h3>
+            <p className="text-sm text-slate-500 max-w-sm mx-auto">
+              {termFilter !== "all"
+                ? `No exam schedules found for ${termFilter === "term_1" ? "Term 1" : "Term 2"}.`
+                : "You haven't scheduled any exams for your assigned grades yet. Click below to create your first exam schedule."}
+            </p>
+            <Button onClick={handleOpenCreate} size="sm" className="gap-2 mt-2">
+              <Plus size={15} /> Schedule New Exam
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {displayedSchedules.map((sched) => {
+            const sortedExams = [...sched.exams].sort(
+              (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+            );
+            const firstDate = sortedExams[0]?.date;
+            const lastDate = sortedExams[sortedExams.length - 1]?.date;
+
+            return (
+              <Card
+                key={sched.id}
+                className="flex flex-col justify-between hover:shadow-md transition-shadow border-slate-200"
+              >
+                <CardHeader className="pb-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <Badge variant="outline" className="text-[10px] font-semibold bg-indigo-50 text-indigo-700 border-indigo-200">
+                          {sched.termName || (sched.termId === "term_2" ? "Term 2" : "Term 1")}
+                        </Badge>
+                      </div>
+                      <CardTitle className="text-lg font-bold text-slate-900">
+                        {sched.examType}
+                      </CardTitle>
+                      <CardDescription className="text-xs font-medium text-slate-500 mt-0.5">
+                        Grade {sched.grade} • Session {sched.academicYear || sched.sessionId}
+                      </CardDescription>
                     </div>
-                  );
-                });
-              })()}
-            </>
-          )}
-        </div>
-      )}
+                    <div>{getStatusBadge(sched.status)}</div>
+                  </div>
+                </CardHeader>
 
-      {/* All Schedules Tab */}
-      {tab === "list" && (
-        <div className="space-y-3">
-          {loadingSchedules ? (
-            <div className="flex items-center justify-center h-40">
-              <Loader2 className="animate-spin text-muted-foreground" size={28} />
-            </div>
-          ) : existingSchedules.length === 0 ? (
-            <Card>
-              <CardContent className="py-16 text-center text-muted-foreground">
-                <Calendar size={40} className="mx-auto mb-4 opacity-30" />
-                <p className="font-semibold text-lg">No exams scheduled yet</p>
-                <p className="text-sm mt-1">Click "New" to create your first exam timetable.</p>
-                <Button className="mt-4 gap-2" onClick={() => { setTab("new"); setWizardStep({ kind: "exam-type" }); }}>
-                  <Plus size={15} /> Schedule an Exam
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            existingSchedules.map((group) => (
-              <ScheduleCard key={`${group.examType}__${group.grade}`} group={group} />
-            ))
-          )}
-        </div>
-      )}
-
-      {/* New Schedule Wizard */}
-      {tab === "new" && (
-        <div>
-          <div className="flex items-center gap-2 mb-5">
-            <button
-              onClick={() => { setTab("upcoming"); setWizardStep({ kind: "exam-type" }); }}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft size={14} /> Back to Schedules
-            </button>
-          </div>
-
-          {/* Wizard Step 1 — Exam Type */}
-          {wizardStep.kind === "exam-type" && (
-            <div className="space-y-3">
-              <p className="text-sm font-semibold text-muted-foreground mb-4">STEP 1 — SELECT EXAM TYPE</p>
-              {EXAM_TYPES.map((et) => {
-                const scheduledGrades = existingSchedules
-                  .filter((g) => g.examType === et.key)
-                  .map((g) => `G${g.grade}`)
-                  .join(", ");
-                return (
-                  <button
-                    key={et.key}
-                    onClick={() => setWizardStep({ kind: "grades", examType: et.key })}
-                    className={`w-full flex items-center gap-4 px-5 py-4 rounded-xl border-2 text-left transition-all hover:shadow-sm ${et.color}`}
-                  >
-                    <span className={`w-3 h-3 rounded-full shrink-0 ${et.dot}`} />
-                    <div className="flex-1">
-                      <p className="font-semibold">{et.key}</p>
-                      {scheduledGrades ? (
-                        <p className="text-xs opacity-70 mt-0.5 flex items-center gap-1">
-                          <CheckCircle size={10} /> Scheduled: {scheduledGrades}
-                        </p>
-                      ) : (
-                        <p className="text-xs opacity-50 mt-0.5">Not yet scheduled</p>
-                      )}
+                <CardContent className="space-y-3 text-xs flex-1">
+                  <div className="bg-slate-50 p-2.5 rounded-lg space-y-1.5 text-slate-600">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Total Subjects:</span>
+                      <span className="font-semibold text-slate-800">{sched.exams.length} subjects</span>
                     </div>
-                    <ChevronRight size={16} className="opacity-50" />
-                  </button>
-                );
-              })}
-            </div>
-          )}
+                    {firstDate && lastDate && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Date Range:</span>
+                        <span className="font-medium text-slate-700">
+                          {new Date(firstDate).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                          })}{" "}
+                          –{" "}
+                          {new Date(lastDate).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                            year: "numeric",
+                          })}
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
-          {/* Wizard Step 2 — Grade Picker */}
-          {wizardStep.kind === "grades" && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-semibold text-muted-foreground">
-                  SELECT GRADE &nbsp;<span className="text-primary">({wizardStep.examType})</span>
-                </p>
-                <Button variant="ghost" size="sm" onClick={() => setWizardStep({ kind: "exam-type" })} className="gap-1 text-muted-foreground">
-                  <ArrowLeft size={14} /> Back
-                </Button>
+                  {/* Remarks if rejected or reviewed */}
+                  {sched.reviewRemarks && (
+                    <div
+                      className={`p-2.5 rounded-lg border text-xs ${
+                        sched.status === "rejected"
+                          ? "bg-rose-50 border-rose-200 text-rose-800"
+                          : "bg-blue-50 border-blue-200 text-blue-800"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 font-semibold mb-1">
+                        <AlertCircle size={13} />
+                        Principal Remarks:
+                      </div>
+                      <p className="leading-relaxed">{sched.reviewRemarks}</p>
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5 text-xs h-8 flex-1"
+                      onClick={() => setViewSchedule(sched)}
+                    >
+                      <Eye size={13} /> View Timetable
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5 text-xs h-8 text-slate-600"
+                      onClick={() => handleDownloadPDF(sched)}
+                      title="Download PDF"
+                    >
+                      <Download size={13} /> PDF
+                    </Button>
+
+                    {(sched.status === "draft" || sched.status === "rejected") && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => handleOpenEdit(sched)}
+                          title="Edit Schedule"
+                        >
+                          <Edit3 size={13} />
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="gap-1 text-xs h-8 bg-amber-600 hover:bg-amber-700 text-white"
+                          onClick={() => handleDirectSubmit(sched)}
+                          title="Submit to Principal"
+                        >
+                          <Send size={12} /> Submit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                          onClick={() => handleDelete(sched.id)}
+                          title="Delete Draft"
+                        >
+                          <Trash2 size={13} />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Schedule Form Modal */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0 overflow-hidden">
+          <DialogHeader className="p-6 pb-4 border-b border-slate-100">
+            <DialogTitle className="text-xl font-bold text-slate-900">
+              {editingId ? "Edit Exam Schedule" : "Schedule New Examination"}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              Link subjects, set timetable dates, and submit to the Principal for formal approval.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="p-6 space-y-4 flex-1 overflow-y-auto">
+            {formError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-lg text-xs font-medium flex items-center gap-2">
+                <AlertCircle size={15} className="shrink-0" />
+                {formError}
               </div>
-              {loadingSchedules ? (
-                <div className="flex items-center justify-center h-32">
-                  <Loader2 className="animate-spin text-muted-foreground" size={24} />
+            )}
+
+            {/* Top selectors */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div>
+                <Label className="text-xs font-medium text-slate-700">Academic Session</Label>
+                <Select value={selectedSessionName} onValueChange={setSelectedSessionName}>
+                  <SelectTrigger className="mt-1 h-9 text-xs">
+                    <SelectValue placeholder="Select Session" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sessions.map((s) => (
+                      <SelectItem key={s.id} value={s.name} className="text-xs">
+                        {s.name} {s.isCurrent ? "(Active)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label className="text-xs font-medium text-slate-700">Grade</Label>
+                <Select value={selectedGrade} onValueChange={setSelectedGrade}>
+                  <SelectTrigger className="mt-1 h-9 text-xs">
+                    <SelectValue placeholder="Select Grade" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {assignedGrades.length > 0 ? (
+                      assignedGrades.map((g) => (
+                        <SelectItem key={g} value={g} className="text-xs">
+                          Grade {g}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="none" disabled className="text-xs">
+                        No assigned grades
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label className="text-xs font-medium text-slate-700">Academic Term</Label>
+                <Select
+                  value={selectedTermId}
+                  onValueChange={(val) => {
+                    setSelectedTermId(val);
+                  }}
+                >
+                  <SelectTrigger className="mt-1 h-9 text-xs">
+                    <SelectValue placeholder="Select Term" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableTerms.map((t) => (
+                      <SelectItem key={t.id} value={t.id} className="text-xs">
+                        {t.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-slate-700">Defined Exam</Label>
+                  {applicableStructure && (
+                    <span className="text-[10px] text-primary font-medium truncate max-w-[110px]">
+                      v{applicableStructure.version.versionNumber}
+                    </span>
+                  )}
                 </div>
-              ) : hodGrades.length === 0 ? (
-                <Card>
-                  <CardContent className="py-12 text-center text-muted-foreground">
-                    No grades assigned. Contact admin to assign grades.
-                  </CardContent>
-                </Card>
+                {structureLoading ? (
+                  <div className="mt-1 h-9 flex items-center px-3 border rounded text-xs text-muted-foreground">
+                    <Loader2 className="animate-spin h-3.5 w-3.5 mr-2 text-primary" /> Loading...
+                  </div>
+                ) : !applicableStructure ? (
+                  <div className="mt-1 h-9 flex items-center px-3 border border-amber-300 bg-amber-50 rounded text-xs text-amber-800">
+                    No structure active
+                  </div>
+                ) : termFilteredExams.length === 0 ? (
+                  <div className="mt-1 h-9 flex items-center px-3 border border-amber-300 bg-amber-50 rounded text-xs text-amber-800">
+                    No exams for this term
+                  </div>
+                ) : (
+                  <Select
+                    value={selectedExamId || selectedExamType}
+                    onValueChange={(val) => {
+                      const ex = termFilteredExams.find((e) => e.id === val || e.name === val);
+                      if (ex) {
+                        setSelectedExamId(ex.id);
+                        setSelectedExamType(ex.name);
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="mt-1 h-9 text-xs">
+                      <SelectValue placeholder="Select Defined Exam" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {termFilteredExams.map((ex) => (
+                        <SelectItem key={ex.id} value={ex.id} className="text-xs">
+                          {ex.name} ({ex.weightagePercentage}%)
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+
+            {/* Structure Warning Alert if not active */}
+            {!structureLoading && !applicableStructure && selectedGrade && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-lg text-xs font-medium flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <p className="font-semibold">No Active Academic Structure for Grade {selectedGrade}</p>
+                  <p className="text-[11px] text-amber-700 mt-0.5">
+                    HOD exam scheduling is restricted: only exams defined in an active Academic Structure can be scheduled. Please request the Principal or Administrator to configure and activate the Academic Structure for Grade {selectedGrade}.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Subjects scheduling list */}
+            <div className="pt-2">
+              <div className="flex items-center justify-between mb-2">
+                <Label className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
+                  Subject Dates & Timings (Grade {selectedGrade})
+                </Label>
+                <span className="text-[11px] text-slate-400">
+                  {subjects.length} scholastic subjects linked
+                </span>
+              </div>
+
+              {subjectsLoading ? (
+                <div className="py-8 text-center text-slate-400">
+                  <Loader2 className="animate-spin h-6 w-6 mx-auto mb-2 text-primary" />
+                  <span className="text-xs">Loading subjects for Grade {selectedGrade}...</span>
+                </div>
+              ) : subjects.length === 0 ? (
+                <div className="p-6 text-center border border-dashed rounded-lg text-slate-400 text-xs">
+                  No scholastic subjects found for Grade {selectedGrade}. Please configure subjects in the Admin Subjects panel.
+                </div>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {hodGrades.map((grade) => {
-                    const alreadyScheduled = existingSchedules.some(
-                      (g) => g.examType === wizardStep.examType && g.grade === grade
-                    );
+                <div className="space-y-2.5">
+                  {subjects.map((sub) => {
+                    const entry = examEntries[sub.id] || {
+                      subjectId: sub.id,
+                      subjectName: sub.name,
+                      date: "",
+                      startTime: "09:30",
+                      endTime: "12:30",
+                      maxMarks: 100,
+                      passingMarks: 35,
+                    };
+
                     return (
-                      <Card
-                        key={grade}
-                        className="cursor-pointer hover:shadow-md hover:border-primary transition-all"
-                        onClick={() => goToSchedule(wizardStep.examType, grade)}
+                      <div
+                        key={sub.id}
+                        className="p-3 bg-slate-50 border border-slate-200 rounded-lg grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
                       >
-                        <CardContent className="pt-6 pb-5 text-center">
-                          <Calendar size={22} className="mx-auto text-primary mb-2" />
-                          <p className="text-2xl font-bold text-primary">{grade}</p>
-                          <p className="text-xs text-muted-foreground">Grade</p>
-                          {alreadyScheduled && (
-                            <span className="mt-2 inline-flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                              <CheckCircle size={10} /> Scheduled
-                            </span>
-                          )}
-                        </CardContent>
-                      </Card>
+                        <div className="sm:col-span-4 font-semibold text-slate-800 text-xs flex items-center gap-1.5">
+                          <FileText size={14} className="text-primary shrink-0" />
+                          <span>{sub.name}</span>
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <Input
+                            type="date"
+                            className="h-8 text-xs"
+                            value={entry.date}
+                            onChange={(e) =>
+                              setExamEntries((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...entry, date: e.target.value },
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3 flex items-center gap-1">
+                          <Input
+                            type="time"
+                            className="h-8 text-xs w-20 px-1"
+                            value={entry.startTime || "09:30"}
+                            onChange={(e) =>
+                              setExamEntries((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...entry, startTime: e.target.value },
+                              }))
+                            }
+                          />
+                          <span className="text-slate-400 text-xs">-</span>
+                          <Input
+                            type="time"
+                            className="h-8 text-xs w-20 px-1"
+                            value={entry.endTime || "12:30"}
+                            onChange={(e) =>
+                              setExamEntries((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...entry, endTime: e.target.value },
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2 flex items-center gap-1">
+                          <span className="text-[10px] text-slate-400 uppercase">Max</span>
+                          <Input
+                            type="number"
+                            className="h-8 text-xs w-16 px-1"
+                            value={entry.maxMarks ?? 100}
+                            onChange={(e) =>
+                              setExamEntries((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...entry, maxMarks: Number(e.target.value) },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
               )}
             </div>
-          )}
+          </div>
 
-          {/* Wizard Step 3 — Set Dates */}
-          {wizardStep.kind === "schedule" && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-muted-foreground">
-                  SET DATES &nbsp;
-                  <span className="text-primary">{wizardStep.examType}</span>
-                  <span className="text-muted-foreground"> / Grade {wizardStep.grade}</span>
-                </p>
-                <Button variant="ghost" size="sm"
-                  onClick={() => setWizardStep({ kind: "grades", examType: wizardStep.examType })}
-                  className="gap-1 text-muted-foreground">
-                  <ArrowLeft size={14} /> Back
-                </Button>
-              </div>
+          <DialogFooter className="p-4 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDialogOpen(false)}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => handleSaveSchedule(false)}
+              disabled={saving || !applicableStructure || definedExams.length === 0}
+              className="gap-1.5"
+            >
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Clock size={14} />}
+              Save Draft
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => handleSaveSchedule(true)}
+              disabled={saving || !applicableStructure || definedExams.length === 0}
+              className="gap-1.5 bg-primary hover:bg-primary/90 text-white"
+            >
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              Submit to Principal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-              {wizardStep.existingIds.length > 0 && (
-                <div className="flex items-center gap-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
-                  <CheckCircle size={14} className="shrink-0" />
-                  Existing schedule loaded — edit dates below and save to update.
-                </div>
-              )}
-
-              {subjects.length === 0 ? (
-                <Card>
-                  <CardContent className="py-8 text-center text-muted-foreground">
-                    No subjects for Grade {wizardStep.grade}. Add subjects in the Admin panel first.
-                  </CardContent>
-                </Card>
-              ) : (
-                <>
-                  {errors.length > 0 && (
-                    <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
-                      Please set dates for: <strong>{errors.join(", ")}</strong>
-                    </div>
-                  )}
-                  <div className="space-y-3">
-                    {subjects.map((sub) => (
-                      <Card key={sub.id} className={errors.includes(sub.name) ? "border-destructive" : ""}>
-                        <CardContent className="pt-4 pb-4">
-                          <div className="flex items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
-                              <ClipboardList size={16} className="text-primary shrink-0" />
-                              <span className="font-medium">{sub.name}</span>
-                            </div>
-                            <Input
-                              type="date"
-                              className="w-44"
-                              value={dates[sub.id] ?? ""}
-                              onChange={(e) => setDates((d) => ({ ...d, [sub.id]: e.target.value }))}
-                            />
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                  <Button className="w-full gap-2" onClick={saveExams} disabled={saving}>
-                    {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                    {saving ? "Saving..." : wizardStep.existingIds.length > 0 ? "Update Exam Schedule" : "Save Exam Schedule"}
-                  </Button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Wizard Step 4 — Done */}
-          {wizardStep.kind === "done" && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
-                <CheckCircle size={20} className="text-green-600 shrink-0" />
+      {/* View Timetable Modal */}
+      {viewSchedule && (
+        <Dialog open={!!viewSchedule} onOpenChange={() => setViewSchedule(null)}>
+          <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
+            <DialogHeader className="p-6 pb-4 border-b border-slate-100">
+              <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="font-semibold text-green-800">Exam schedule saved!</p>
-                  <p className="text-xs text-green-600">
-                    {wizardStep.examType} — Grade {wizardStep.grade} — {wizardStep.exams.length} subjects · Notice posted to student dashboards
-                  </p>
+                  <DialogTitle className="text-xl font-bold text-slate-900">
+                    {viewSchedule.examType}
+                  </DialogTitle>
+                  <DialogDescription className="text-xs text-slate-500 mt-0.5">
+                    Grade {viewSchedule.grade} • Session {viewSchedule.academicYear || viewSchedule.sessionId}
+                  </DialogDescription>
                 </div>
+                <div>{getStatusBadge(viewSchedule.status)}</div>
               </div>
+            </DialogHeader>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <span>{wizardStep.examType}</span>
-                    <span className="text-muted-foreground font-normal">/ Grade {wizardStep.grade}</span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  {[...wizardStep.exams]
-                    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                    .map((exam) => (
-                      <div key={exam.subjectId} className="flex items-center justify-between py-2.5 border-b border-border last:border-0">
-                        <span className="font-medium text-sm">{exam.subjectName}</span>
-                        <span className="text-sm text-muted-foreground">
-                          {new Date(exam.date).toLocaleDateString("en-US", {
-                            weekday: "short", month: "short", day: "numeric", year: "numeric",
-                          })}
-                        </span>
-                      </div>
-                    ))}
-                </CardContent>
-              </Card>
+            <div className="p-6 space-y-4 flex-1 overflow-y-auto text-xs">
+              {viewSchedule.reviewRemarks && (
+                <div
+                  className={`p-3 rounded-lg border ${
+                    viewSchedule.status === "rejected"
+                      ? "bg-rose-50 border-rose-200 text-rose-800"
+                      : "bg-blue-50 border-blue-200 text-blue-800"
+                  }`}
+                >
+                  <div className="font-semibold flex items-center gap-1.5 mb-1">
+                    <AlertCircle size={14} />
+                    Principal Feedback / Remarks
+                  </div>
+                  <p className="leading-relaxed">{viewSchedule.reviewRemarks}</p>
+                </div>
+              )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button variant="outline" className="gap-2"
-                  onClick={() => generatePDF(wizardStep.examType, wizardStep.grade, wizardStep.exams)}>
-                  <FileText size={16} /> Download PDF
-                </Button>
-                <Button variant="outline" className="gap-2"
-                  onClick={async () => {
-                    await saveNotice(wizardStep.grade, wizardStep.examType, wizardStep.exams);
-                    alert(`Notice re-sent to Grade ${wizardStep.grade} students.`);
-                  }}>
-                  <Bell size={16} /> Send Notice Again
-                </Button>
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Date</th>
+                      <th className="py-2.5 px-3">Day</th>
+                      <th className="py-2.5 px-3">Time</th>
+                      <th className="py-2.5 px-3">Subject</th>
+                      <th className="py-2.5 px-3 text-right">Max Marks</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[...viewSchedule.exams]
+                      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                      .map((ex) => {
+                        const d = new Date(ex.date);
+                        return (
+                          <tr key={ex.subjectId} className="hover:bg-slate-50/60">
+                            <td className="py-2.5 px-3 font-medium text-slate-800">
+                              {d.toLocaleDateString("en-IN", {
+                                day: "2-digit",
+                                month: "short",
+                                year: "numeric",
+                              })}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-500">
+                              {d.toLocaleDateString("en-IN", { weekday: "short" })}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-600">
+                              {ex.startTime && ex.endTime ? `${ex.startTime} – ${ex.endTime}` : "—"}
+                            </td>
+                            <td className="py-2.5 px-3 font-semibold text-slate-900">
+                              {ex.subjectName}
+                            </td>
+                            <td className="py-2.5 px-3 text-right text-slate-700">
+                              {ex.maxMarks || 100}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
               </div>
-
-              <Button variant="ghost" className="w-full"
-                onClick={() => { setTab("list"); setWizardStep({ kind: "exam-type" }); }}>
-                Back to All Schedules
-              </Button>
             </div>
-          )}
-        </div>
+
+            <DialogFooter className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => handleDownloadPDF(viewSchedule)}
+              >
+                <Download size={14} /> Download PDF Timetable
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => setViewSchedule(null)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

@@ -10,9 +10,10 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Download, FileText, UploadCloud, Trash2 } from "lucide-react";
 import { User } from "@/lib/types";
+import { getActiveAcademicSession } from "@/lib/sessions";
 import { getAcademicSession } from "@/lib/fees";
 
-type AdmissionType = "student" | "teacher" | "accountant" | "hod";
+type AdmissionType = "student" | "teacher" | "accountant" | "hod" | "printing";
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 
@@ -323,10 +324,13 @@ export default function Admissions() {
           createdAt: now,
         });
 
+        const activeSess = await getActiveAcademicSession();
+        const activeYear = activeSess?.name || getAcademicSession();
         const enrollmentRef = doc(collection(db, "enrollments"));
         batch.set(enrollmentRef, {
           studentId: uid,
-          academicYear: getAcademicSession(),
+          academicYear: activeYear,
+          sessionId: activeSess?.id || null,
           className: admissionGrade,
           sectionName: null,
           sectionId: null,
@@ -401,6 +405,20 @@ export default function Admissions() {
         });
       }
 
+      if (form.type === "printing") {
+        batch.set(doc(db, "users", uid), {
+          name: form.name.trim(),
+          email: normalizedEmail,
+          role: "printing",
+          subject: "Printing Department",
+          designation: "Printing Department Staff",
+          DOB: form.dob || "",
+          photo: photoData,
+          address: form.address || "",
+          phone: form.parentContact || "",
+        });
+      }
+
       await batch.commit();
       linkedSaved = true;
       resetForm();
@@ -466,6 +484,7 @@ export default function Admissions() {
                   <option value="teacher">Teacher</option>
                   <option value="hod">HOD</option>
                   <option value="accountant">Accounts Staff</option>
+                  <option value="printing">Printing Department Staff</option>
                 </select>
               </div>
               <div className="space-y-1.5">

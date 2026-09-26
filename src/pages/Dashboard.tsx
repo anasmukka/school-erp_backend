@@ -6,22 +6,18 @@ import { getAcademicSession } from "@/lib/fees";
 import { TimetableEntryType } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import {
-  GraduationCap, Users, BookOpen, Clock, FileText, Award,
+  GraduationCap, Users, BookOpen, Clock, FileText,
   Bell, CalendarDays, CreditCard, ChevronRight, TrendingUp,
-  BarChart3, ArrowUpRight,
+  BarChart3, ArrowUpRight, School, ShieldCheck, Printer, Package,
 } from "lucide-react";
 import { Link } from "wouter";
 import TeacherDashboard from "@/pages/teacher/Dashboard";
+import PrintingDashboard from "@/pages/printing/PrintingDashboard";
+import OperationsDashboard from "@/pages/operations/OperationsDashboard";
 import SchoolTimetableSheet, { SchoolTimetableSheetSlot } from "@/components/timetable/SchoolTimetableSheet";
-
-interface ExamNotice {
-  id: string;
-  examType: string;
-  grade: string;
-  message: string;
-  createdAt: string;
-  examDates: { subjectName: string; date: string }[];
-}
+import { useAcademicSession } from "@/contexts/AcademicSessionContext";
+import { Badge } from "@/components/ui/badge";
+import UpcomingEventsWidget from "@/components/calendar/UpcomingEventsWidget";
 
 interface StudentTimetableSlot {
   id: string;
@@ -85,16 +81,16 @@ function getTodayFormatted() {
 
 export default function Dashboard() {
   const { appUser } = useAuth();
-  const currentSession = getAcademicSession();
+  const { workingSession, activeSession } = useAcademicSession();
+  const currentSession = workingSession?.name || getAcademicSession();
   const [stats, setStats] = useState({
-    teachers: 0, students: 0, pendingStudents: 0,
+    teachers: 0, students: 0, classes: 0, pendingStudents: 0,
     feeStructures: 0, payments: 0, collections: 0,
   });
-  const [studentInfo, setStudentInfo] = useState<{ grade: string; sectionId: string | null; hasReleasedRC: boolean } | null>(null);
-  const [examNotices, setExamNotices] = useState<ExamNotice[]>([]);
+  const [studentInfo, setStudentInfo] = useState<{ grade: string; sectionId: string | null; sectionName?: string | null; rollNo?: string | null } | null>(null);
+  const [upcomingExam, setUpcomingExam] = useState<any | null>(null);
   const [timetableSlots, setTimetableSlots] = useState<StudentTimetableSlot[]>([]);
   const [assignedSubjects, setAssignedSubjects] = useState<StudentAssignedSubject[]>([]);
-  const [expandedNotice, setExpandedNotice] = useState<string | null>(null);
   const studentTimetableSheetSlots = useMemo(
     () =>
       timetableSlots.map((slot, index) => ({
@@ -115,16 +111,21 @@ export default function Dashboard() {
     if (!appUser) return;
     const load = async () => {
       if (appUser.role === "admin") {
-        const [t, s, feeStructuresSnap, paymentsSnap] = await Promise.all([
+        const [t, s, secSnap, enSnap] = await Promise.all([
           getDocs(collection(db, "teachers")),
           getDocs(collection(db, "students")),
-          getDocs(query(collection(db, "feeStructures"), where("academicSession", "==", currentSession))),
-          getDocs(query(collection(db, "feePayments"), where("academicSession", "==", currentSession))),
+          getDocs(collection(db, "sections")),
+          workingSession?.name
+            ? getDocs(query(collection(db, "enrollments"), where("academicYear", "==", workingSession.name)))
+            : Promise.resolve(null),
         ]);
-        const collections = paymentsSnap.docs.reduce(
-          (total, record) => total + (Number(record.data().amount) || 0), 0,
-        );
-        setStats({ teachers: t.size, students: s.size, pendingStudents: 0, feeStructures: feeStructuresSnap.size, payments: paymentsSnap.size, collections });
+        const enrolledCount = enSnap && !enSnap.empty ? enSnap.size : s.size;
+        setStats((prev) => ({
+          ...prev,
+          teachers: t.size,
+          students: enrolledCount,
+          classes: secSnap.size,
+        }));
       } else if (appUser.role === "accountant") {
         const [feeStructuresSnap, paymentsSnap, studentsSnap] = await Promise.all([
           getDocs(query(collection(db, "feeStructures"), where("academicSession", "==", currentSession))),
@@ -152,36 +153,38 @@ export default function Dashboard() {
         }
         if (!studentSnap.empty) {
           const s = studentSnap.docs[0].data();
-          const studentDocId = studentSnap.docs[0].id;
-          const grade = s.grade as string;
-          const sectionId = (s.sectionId as string | null) ?? null;
+          const sId = studentSnap.docs[0].id;
 
-          const [rcSnap, noticeSnap] = await Promise.all([
-            getDocs(query(
-              collection(db, "reportCards"),
-              where("studentId", "==", studentDocId),
-              where("status", "==", "generated")
-            )),
-            getDocs(query(
-              collection(db, "notices"),
-              where("grade", "==", grade),
-              where("type", "==", "exam_schedule")
-            )),
-          ]);
-
-          setStudentInfo({ grade, sectionId, hasReleasedRC: !rcSnap.empty });
-
-          const seen = new Set<string>();
-          const notices: ExamNotice[] = [];
-          const sortedNoticeDocs = [...noticeSnap.docs].sort(
-            (a, b) => (b.data().createdAt ?? "").localeCompare(a.data().createdAt ?? "")
+          // Check active enrollment
+          const enSnap = await getDocs(
+            query(collection(db, "enrollments"), where("studentId", "==", sId), where("status", "==", "active")),
           );
-          sortedNoticeDocs.forEach((d) => {
-            const data = d.data();
-            const key = `${data.examType}`;
-            if (!seen.has(key)) { seen.add(key); notices.push({ id: d.id, ...data } as ExamNotice); }
-          });
-          setExamNotices(notices);
+          const activeEn = !enSnap.empty ? enSnap.docs[0].data() : null;
+          const grade = (activeEn?.className || s.grade || "") as string;
+          const sectionId = (activeEn?.sectionId || s.sectionId || null) as string | null;
+          const sectionName = (activeEn?.sectionName || null) as string | null;
+          const rollNo = (activeEn?.rollNo || s.rollNo || null) as string | null;
+
+          setStudentInfo({ grade, sectionId, sectionName, rollNo });
+
+          // Fetch approved exam schedules for student's grade
+          if (grade) {
+            getDocs(
+              query(
+                collection(db, "examSchedules"),
+                where("grade", "==", grade),
+                where("status", "==", "approved"),
+              ),
+            )
+              .then((eSnap) => {
+                if (!eSnap.empty) {
+                  setUpcomingExam(eSnap.docs[0].data());
+                } else {
+                  setUpcomingExam(null);
+                }
+              })
+              .catch(() => {});
+          }
 
           if (sectionId) {
             const [assignmentSnap, subjectSnap, teacherSnap, timetableSnap] = await Promise.all([
@@ -225,6 +228,14 @@ export default function Dashboard() {
     load();
   }, [appUser, currentSession]);
 
+  if (appUser?.role === "operations") {
+    return <OperationsDashboard />;
+  }
+
+  if (appUser?.role === "printing") {
+    return <PrintingDashboard />;
+  }
+
   if (appUser?.role === "teacher") {
     return <TeacherDashboard />;
   }
@@ -233,28 +244,48 @@ export default function Dashboard() {
     return (
       <div data-testid="admin-dashboard" className="space-y-8">
         <div className="gradient-banner rounded-2xl px-8 py-8 text-white">
-          <div className="relative z-10">
-            <p className="text-sm font-medium text-blue-200/80">{getTodayFormatted()}</p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight">{getGreeting()}, {appUser.name}</h1>
-            <p className="mt-1.5 text-sm text-slate-300/90">Here's what's happening at your school today.</p>
+          <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-blue-200/80">{getTodayFormatted()}</p>
+              <h1 className="mt-2 text-3xl font-bold tracking-tight">{getGreeting()}, {appUser.name}</h1>
+              <p className="mt-1.5 text-sm text-slate-300/90">Here's what's happening at your school today.</p>
+            </div>
+            {workingSession && (
+              <div className="rounded-xl bg-white/10 backdrop-blur-md border border-white/20 p-3.5 text-xs space-y-1">
+                <span className="text-blue-200 font-semibold uppercase tracking-wider block text-[10px]">Academic Session</span>
+                <span className="text-base font-bold text-white block">{workingSession.name}</span>
+                <span className={`inline-block rounded px-2 py-0.5 text-[10px] font-semibold ${
+                  workingSession.id === activeSession?.id ? "bg-emerald-500/30 text-emerald-200" : "bg-amber-500/30 text-amber-200"
+                }`}>
+                  {workingSession.id === activeSession?.id ? "Active Academic Session" : "Historical View"}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
           <GlassStatCard icon={<Users size={22} />} label="Teachers" value={stats.teachers} color="blue" />
           <GlassStatCard icon={<GraduationCap size={22} />} label="Students" value={stats.students} color="emerald" />
-          <GlassStatCard icon={<CreditCard size={22} />} label="Fee Structures" value={stats.feeStructures} color="amber" />
-          <GlassStatCard icon={<TrendingUp size={22} />} label="Collections" value={formatCurrency(stats.collections)} color="violet" />
+          <GlassStatCard icon={<School size={22} />} label="Classes" value={stats.classes} color="amber" />
         </div>
+
+        <UpcomingEventsWidget />
 
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Quick Actions</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <GlassQuickLink href="/admin/calendar" label="School Calendar" desc="Manage events, assemblies, holidays & exams" icon={<CalendarDays size={20} className="text-blue-500" />} />
+            <GlassQuickLink href="/admin/sessions" label="Academic Sessions" desc="Manage school years & active period" icon={<CalendarDays size={20} className="text-emerald-500" />} />
+            <GlassQuickLink href="/admin/promotion" label="Student Promotion" desc="Promote students & roll forward sessions" icon={<GraduationCap size={20} className="text-indigo-500" />} />
+            <GlassQuickLink href="/admin/operations" label="Operations Staff" desc="Manage printing, library & inventory users" icon={<Package size={20} className="text-blue-500" />} />
+            <GlassQuickLink href="/admin/reports" label="Reports & Audits" desc="Institutional intelligence & audit ledger" icon={<BarChart3 size={20} className="text-purple-500" />} />
             <GlassQuickLink href="/admin/teachers" label="Manage Teachers" desc="Add and view teachers" icon={<Users size={20} className="text-blue-500" />} />
-            <GlassQuickLink href="/admin/students" label="Manage Students" desc="Add and view students" icon={<GraduationCap size={20} className="text-emerald-500" />} />
-            <GlassQuickLink href="/accounts/fees" label="Fees Management" desc="Publish class fee structures" icon={<CreditCard size={20} className="text-amber-500" />} />
-            <GlassQuickLink href="/accounts/collections" label="Fee Collections" desc="Record payments and receipts" icon={<FileText size={20} className="text-violet-500" />} />
-            <GlassQuickLink href="/admin/admissions" label="Admissions" desc="Manage admissions and new enrollments" icon={<BookOpen size={20} className="text-cyan-500" />} />
+            <GlassQuickLink href="/admin/students" label="Manage Students" desc="Add and view students" icon={<GraduationCap size={20} className="text-cyan-500" />} />
+            <GlassQuickLink href="/admin/classes" label="Manage Classes" desc="Manage sections, class teachers, and subjects" icon={<School size={20} className="text-amber-500" />} />
+            <GlassQuickLink href="/admin/subjects" label="Manage Subjects" desc="Configure school curriculum and subjects" icon={<BookOpen size={20} className="text-violet-500" />} />
+            <GlassQuickLink href="/admin/hods" label="Section Heads" desc="View and assign grade section heads" icon={<ShieldCheck size={20} className="text-purple-500" />} />
+            <GlassQuickLink href="/admin/admissions" label="Admissions" desc="Manage admissions and new enrollments" icon={<FileText size={20} className="text-rose-500" />} />
           </div>
         </div>
       </div>
@@ -316,9 +347,12 @@ export default function Dashboard() {
           </div>
         </div>
 
+        <UpcomingEventsWidget />
+
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Quick Actions</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <GlassQuickLink href="/hod/calendar" label="School Calendar" desc="View school events, assemblies & exams" icon={<CalendarDays size={20} className="text-primary" />} />
             <GlassQuickLink href="/hod/pending" label="Assign Sections" desc="Assign pending students to sections" icon={<Clock size={20} className="text-amber-500" />} />
             <GlassQuickLink href="/hod/classes" label="Class Management" desc="Manage subjects and students by class" icon={<GraduationCap size={20} className="text-blue-500" />} />
             <GlassQuickLink href="/hod/timetable" label="Class Timetable" desc="Create and publish section timetables" icon={<CalendarDays size={20} className="text-emerald-500" />} />
@@ -349,72 +383,55 @@ export default function Dashboard() {
                 <div>
                   <p className="text-2xl font-bold text-blue-700">Grade {studentInfo.grade}</p>
                   <p className="text-sm font-medium text-muted-foreground">
-                    {studentInfo.sectionId ? `Section ${studentInfo.sectionId}` : "Section not assigned"}
+                    {studentInfo.sectionName ? `Section ${studentInfo.sectionName}` : studentInfo.sectionId ? `Section Assigned` : "Section not assigned"}
+                    {studentInfo.rollNo && <span className="ml-2 font-mono font-bold text-slate-800">• Roll No: {studentInfo.rollNo}</span>}
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className={`glass-card-strong rounded-2xl p-6 ${studentInfo.hasReleasedRC ? 'border-emerald-200/50' : ''}`}>
+            <div className="glass-card-strong rounded-2xl p-6">
               <div className="flex items-center gap-4">
-                <div className={`stat-card-icon ${studentInfo.hasReleasedRC ? "bg-emerald-100" : "bg-slate-100"}`}>
-                  <Award size={22} className={`relative z-10 ${studentInfo.hasReleasedRC ? "text-emerald-600" : "text-slate-400"}`} />
+                <div className="stat-card-icon bg-emerald-100">
+                  <School size={22} className="text-emerald-600 relative z-10" />
                 </div>
                 <div>
-                  <p className={`text-sm font-semibold ${studentInfo.hasReleasedRC ? "text-emerald-700" : "text-muted-foreground"}`}>
-                    {studentInfo.hasReleasedRC ? "Report Card Available" : "Result Not Released"}
-                  </p>
-                  <p className={`text-xs mt-0.5 ${studentInfo.hasReleasedRC ? "text-emerald-600" : "text-muted-foreground"}`}>
-                    {studentInfo.hasReleasedRC ? "Your Final Exam results are ready" : "Check back later"}
-                  </p>
+                  <p className="text-sm font-semibold text-emerald-700">Enrolled Student</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Session: {currentSession}</p>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {examNotices.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 mb-4">
-              <Bell size={16} className="text-primary" />
-              <h2 className="font-semibold text-sm">Exam Notices</h2>
-              <span className="text-xs bg-primary text-primary-foreground rounded-full px-2.5 py-0.5 font-medium">{examNotices.length}</span>
+        {upcomingExam && (
+          <div className="bg-gradient-to-r from-indigo-50 to-primary/5 border border-primary/20 rounded-2xl p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                <CalendarDays size={22} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="font-bold text-base text-slate-900">{upcomingExam.examType}</p>
+                  <span className="bg-emerald-100 text-emerald-800 text-[10px] font-semibold px-2 py-0.5 rounded-full">
+                    Approved by Principal
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Official examination timetable published for Grade {studentInfo?.grade} • {upcomingExam.exams?.length || 0} subjects scheduled
+                </p>
+              </div>
             </div>
-            <div className="space-y-3">
-              {examNotices.map((notice) => {
-                const isExpanded = expandedNotice === notice.id;
-                return (
-                  <div key={notice.id} className="glass-card-strong rounded-2xl overflow-hidden">
-                    <button className="w-full text-left px-5 py-4" onClick={() => setExpandedNotice(isExpanded ? null : notice.id)}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center shrink-0">
-                            <CalendarDays size={18} className="text-blue-500" />
-                          </div>
-                          <div>
-                            <p className="font-semibold text-sm">{notice.examType}</p>
-                            <p className="text-xs text-muted-foreground mt-0.5">{notice.message}</p>
-                          </div>
-                        </div>
-                        <span className="text-xs text-primary font-medium shrink-0">{isExpanded ? "Hide" : "View dates"}</span>
-                      </div>
-                    </button>
-                    {isExpanded && notice.examDates && notice.examDates.length > 0 && (
-                      <div className="px-5 pb-4 border-t border-border/40 pt-3 space-y-2">
-                        {[...notice.examDates].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).map((ed) => (
-                          <div key={ed.subjectName} className="flex items-center justify-between text-sm">
-                            <span className="font-medium">{ed.subjectName}</span>
-                            <span className="text-muted-foreground">{new Date(ed.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <Link href="/student/exams">
+              <a className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 py-2 bg-primary text-white rounded-xl hover:bg-primary/90 transition-all shrink-0">
+                <span>View Timetable</span>
+                <ArrowUpRight size={14} />
+              </a>
+            </Link>
           </div>
         )}
+
+        <UpcomingEventsWidget />
 
         <div>
           <div className="flex items-center gap-2 mb-4">
@@ -475,9 +492,12 @@ export default function Dashboard() {
 
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Quick Actions</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+            <GlassQuickLink href="/student/calendar" label="School Calendar" desc="View school events, activities & exams" icon={<CalendarDays size={20} className="text-primary" />} />
+            <GlassQuickLink href="/student/exams" label="Exam Timetable" desc="View approved examination schedule" icon={<CalendarDays size={20} className="text-indigo-500" />} />
             <GlassQuickLink href="/student/fees" label="My Fees" desc="Check fee schedule, dues, and payment history" icon={<CreditCard size={20} className="text-emerald-500" />} />
-            <GlassQuickLink href="/student/report-card" label="My Report Card" desc="View your Final Exam results" icon={<FileText size={20} className="text-blue-500" />} />
+            <GlassQuickLink href="/student/assignments" label="Assignments" desc="View homework, projects, and activities" icon={<FileText size={20} className="text-blue-500" />} />
+            <GlassQuickLink href="/student/notices" label="School Notices" desc="Read announcements and school updates" icon={<Bell size={20} className="text-amber-500" />} />
           </div>
         </div>
       </div>

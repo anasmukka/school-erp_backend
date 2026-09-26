@@ -164,8 +164,13 @@ export default function StudentFees() {
     setPayMessage("");
   };
 
+  const [activeOrder, setActiveOrder] = useState<any>(null);
+  const [selectedPaymentMode, setSelectedPaymentMode] = useState<"upi" | "online" | "card">("upi");
+  const [gatewayStep, setGatewayStep] = useState<"select" | "checkout" | "success">("select");
+  const [confirmedReceipt, setConfirmedReceipt] = useState<any>(null);
+
   const startPayment = async () => {
-    if (!student || !summary) return;
+    if (!student || !structure || !summary) return;
     if (paySelection.size === 0) {
       setPayError("Select at least one installment to pay.");
       return;
@@ -174,11 +179,79 @@ export default function StudentFees() {
     setPayMessage("");
     setPaying(true);
     try {
-      const installmentIds = summary.ledger.filter((row) => paySelection.has(row.id)).map((row) => row.id);
-      const order = await createFeePaymentOrder({ studentId: student.id, installmentIds });
-      setPayMessage(`Payment order created. Amount: ${formatCurrency(order.amount)}. Complete payment in the gateway window.`);
+      const selectedRows = summary.ledger.filter((row) => paySelection.has(row.id));
+      const installmentIds = selectedRows.map((row) => row.id);
+      const installmentLabels = selectedRows.map((row) => row.label);
+      const order = await createFeePaymentOrder({
+        studentId: student.id,
+        studentName: student.name,
+        grade: student.grade,
+        structureId: structure.id,
+        academicSession: currentSession,
+        installmentIds,
+        installmentLabels,
+        amount: selectedTotal,
+      });
+
+      setActiveOrder(order);
+      setGatewayStep("checkout");
     } catch (err: any) {
       setPayError(err?.message ?? "Failed to create payment order. Please try again.");
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const completeOnlinePayment = async () => {
+    if (!student || !structure || !summary || !activeOrder) return;
+    setPaying(true);
+    setPayError("");
+    try {
+      const selectedRows = summary.ledger.filter((row) => paySelection.has(row.id));
+      const targetRow = selectedRows[0];
+      const result = await import("@/lib/payments").then((m) =>
+        m.verifyAndRecordOnlineFeePayment(
+          {
+            orderId: activeOrder.orderId,
+            paymentId: `PAY_GATEWAY_${Date.now()}`,
+            signatureToken: activeOrder.signatureToken,
+            studentId: student.id,
+            studentName: student.name,
+            grade: student.grade,
+            structureId: structure.id,
+            academicSession: currentSession,
+            installmentId: targetRow.id,
+            installmentLabel: targetRow.label,
+            amount: selectedTotal,
+            paymentMode: "online",
+            payerEmail: appUser?.email,
+          },
+          { id: appUser?.id || "student", name: appUser?.name, role: appUser?.role }
+        )
+      );
+
+      if (result.success) {
+        setConfirmedReceipt({
+          receiptNo: result.receiptNo,
+          transactionId: result.transactionId,
+          amount: selectedTotal,
+          paidAt: result.paidAt,
+          installmentLabel: selectedRows.map((r) => r.label).join(", "),
+        });
+        setGatewayStep("success");
+        // Reload payments
+        const paymentsSnapshot = await getDocs(
+          query(collection(db, "feePayments"), where("studentId", "==", student.id))
+        );
+        setPayments(
+          paymentsSnapshot.docs
+            .map((record) => ({ id: record.id, ...record.data() } as FeePayment))
+            .filter((payment) => payment.structureId === structure.id)
+            .sort((a, b) => (b.paidAt ?? "").localeCompare(a.paidAt ?? ""))
+        );
+      }
+    } catch (err: any) {
+      setPayError(err?.message || "Payment verification failed. Please try again.");
     } finally {
       setPaying(false);
     }
@@ -424,62 +497,230 @@ export default function StudentFees() {
         </CardContent>
       </Card>
 
-      <Dialog open={payOpen} onOpenChange={(v) => { if (!v) { setPayError(""); setPayMessage(""); } setPayOpen(v); }}>
+      <Dialog
+        open={payOpen}
+        onOpenChange={(v) => {
+          if (!v) {
+            setPayError("");
+            setPayMessage("");
+            setGatewayStep("select");
+            setActiveOrder(null);
+            setConfirmedReceipt(null);
+          }
+          setPayOpen(v);
+        }}
+      >
         <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Select installments to pay</DialogTitle>
-            <DialogDescription>
-              Pending and partial installments for this session. The amount is confirmed by the server when you create the order.
-            </DialogDescription>
-          </DialogHeader>
+          {gatewayStep === "select" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Select installments to pay</DialogTitle>
+                <DialogDescription>
+                  Pending and partial installments for this session. The amount is confirmed by the server when you create the order.
+                </DialogDescription>
+              </DialogHeader>
 
-          {pendingInstallments.length === 0 ? (
-            <div className="rounded-lg border border-border bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
-              No pending installments.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {pendingInstallments.map((row) => (
-                <label key={row.id} className="flex items-start gap-3 rounded-lg border border-border px-3 py-2">
-                  <Checkbox
-                    checked={paySelection.has(row.id)}
-                    onCheckedChange={() => toggleSelection(row.id)}
-                  />
-                  <div className="flex-1">
-                    <p className="font-medium text-sm">{row.label}</p>
-                    <p className="text-xs text-muted-foreground">Due {row.dueDate}</p>
-                  </div>
-                  <div className="text-sm font-semibold">{formatCurrency(row.balance)}</div>
-                </label>
-              ))}
-            </div>
+              {pendingInstallments.length === 0 ? (
+                <div className="rounded-lg border border-border bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
+                  No pending installments.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {pendingInstallments.map((row) => (
+                    <label key={row.id} className="flex items-start gap-3 rounded-lg border border-border px-3 py-2 cursor-pointer hover:bg-slate-50">
+                      <Checkbox
+                        checked={paySelection.has(row.id)}
+                        onCheckedChange={() => toggleSelection(row.id)}
+                      />
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{row.label}</p>
+                        <p className="text-xs text-muted-foreground">Due {row.dueDate}</p>
+                      </div>
+                      <div className="text-sm font-semibold">{formatCurrency(row.balance)}</div>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3 text-sm flex items-center justify-between">
+                <span>Selected total</span>
+                <span className="font-semibold">{formatCurrency(selectedTotal)}</span>
+              </div>
+
+              {payError ? (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {payError}
+                </div>
+              ) : null}
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setPayOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={startPayment} disabled={paying || pendingInstallments.length === 0 || selectedTotal <= 0}>
+                  {paying ? <Loader2 className="animate-spin mr-1.5" size={16} /> : <CreditCard size={16} className="mr-1.5" />}
+                  {paying ? "Creating order..." : `Proceed to Pay (${formatCurrency(selectedTotal)})`}
+                </Button>
+              </DialogFooter>
+            </>
           )}
 
-          <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3 text-sm flex items-center justify-between">
-            <span>Selected total</span>
-            <span className="font-semibold">{formatCurrency(selectedTotal)}</span>
-          </div>
+          {gatewayStep === "checkout" && activeOrder && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <CreditCard className="text-primary" size={20} />
+                  <span>Prestige Secure Payment Gateway</span>
+                </DialogTitle>
+                <DialogDescription>
+                  Complete your authorized transaction. Transaction is verified and credited immediately to your student ledger.
+                </DialogDescription>
+              </DialogHeader>
 
-          {payError ? (
-            <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {payError}
-            </div>
-          ) : null}
-          {payMessage ? (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-              {payMessage}
-            </div>
-          ) : null}
+              <div className="space-y-4 py-2">
+                <div className="rounded-xl border border-border bg-slate-50/80 p-4 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Order Reference</span>
+                    <span className="font-mono font-bold text-slate-800">{activeOrder.orderId}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Student Name</span>
+                    <span className="font-semibold text-slate-900">{student.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Class & Session</span>
+                    <span className="font-semibold text-slate-900">Grade {student.grade} · {currentSession}</span>
+                  </div>
+                  <div className="border-t border-slate-200 pt-2 flex justify-between text-sm">
+                    <span className="font-bold text-slate-900">Total Payable</span>
+                    <span className="font-bold text-primary text-base">{formatCurrency(activeOrder.amount)}</span>
+                  </div>
+                </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPayOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={startPayment} disabled={paying || pendingInstallments.length === 0}>
-              {paying ? <Loader2 className="animate-spin" /> : <CreditCard size={16} />}
-              {paying ? "Creating order..." : "Create Payment Order"}
-            </Button>
-          </DialogFooter>
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-700">Select Payment Method</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPaymentMode("upi")}
+                      className={`p-3 rounded-xl border text-center transition-all ${
+                        selectedPaymentMode === "upi"
+                          ? "border-primary bg-primary/5 text-primary font-bold shadow-xs"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <p className="text-xs font-bold">UPI / QR</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">GPay, PhonePe, Paytm</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPaymentMode("card")}
+                      className={`p-3 rounded-xl border text-center transition-all ${
+                        selectedPaymentMode === "card"
+                          ? "border-primary bg-primary/5 text-primary font-bold shadow-xs"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <p className="text-xs font-bold">Card</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">Debit / Credit Card</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPaymentMode("online")}
+                      className={`p-3 rounded-xl border text-center transition-all ${
+                        selectedPaymentMode === "online"
+                          ? "border-primary bg-primary/5 text-primary font-bold shadow-xs"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <p className="text-xs font-bold">Net Banking</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">All Major Banks</p>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-800 space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <span>🔒 256-bit Encrypted Transaction</span>
+                  </p>
+                  <p className="text-[11px] text-emerald-700">
+                    Once verified, your fee status and exam Hall Ticket eligibility will be updated in real time.
+                  </p>
+                </div>
+
+                {payError ? (
+                  <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {payError}
+                  </div>
+                ) : null}
+              </div>
+
+              <DialogFooter className="flex items-center justify-between sm:justify-between">
+                <Button variant="outline" onClick={() => setGatewayStep("select")} disabled={paying}>
+                  Back
+                </Button>
+                <Button onClick={completeOnlinePayment} disabled={paying} className="bg-emerald-600 hover:bg-emerald-700">
+                  {paying ? <Loader2 className="animate-spin mr-1.5" size={16} /> : null}
+                  {paying ? "Verifying Transaction..." : `Pay ${formatCurrency(activeOrder.amount)} Now`}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {gatewayStep === "success" && confirmedReceipt && (
+            <>
+              <DialogHeader>
+                <div className="mx-auto my-2 h-12 w-12 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+                  <CheckCircle2 size={28} />
+                </div>
+                <DialogTitle className="text-center text-lg text-emerald-800">
+                  Payment Verified & Completed!
+                </DialogTitle>
+                <DialogDescription className="text-center text-xs">
+                  Your payment has been successfully recorded in the official fee ledger.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 space-y-2.5 text-xs text-slate-800 my-2">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Receipt Number</span>
+                  <span className="font-mono font-bold text-emerald-800">{confirmedReceipt.receiptNo}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Transaction ID</span>
+                  <span className="font-mono text-slate-700">{confirmedReceipt.transactionId}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Installment(s)</span>
+                  <span className="font-semibold">{confirmedReceipt.installmentLabel}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Amount Paid</span>
+                  <span className="font-bold text-slate-900 text-sm">{formatCurrency(confirmedReceipt.amount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Payment Date</span>
+                  <span className="font-medium">{confirmedReceipt.paidAt}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-800">
+                <p className="font-semibold">Exam Eligibility Status Updated</p>
+                <p className="text-[11px] text-blue-700 mt-0.5">
+                  Your updated fee status has been recorded. Check your <strong>Hall Tickets</strong> section to download your exam admit card.
+                </p>
+              </div>
+
+              <DialogFooter className="flex items-center justify-between sm:justify-between">
+                <Button variant="outline" onClick={() => window.print()}>
+                  Print Receipt
+                </Button>
+                <Button onClick={() => setPayOpen(false)}>
+                  Done
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>

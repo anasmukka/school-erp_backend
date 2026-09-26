@@ -4,8 +4,11 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/contexts/AuthContext";
-import { Student, Subject, Teacher, SubjectAssignment, Section } from "@/lib/types";
+import { Student, Subject, Teacher, SubjectAssignment, Section, User } from "@/lib/types";
 import { getActiveEnrollment, loadStudentsForSection } from "@/lib/enrollments";
+import { useAcademicSession } from "@/contexts/AcademicSessionContext";
+
+const DEFAULT_GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,8 +30,11 @@ type View =
 
 export default function ClassManagement() {
   const { appUser } = useAuth();
+  const { workingSession } = useAcademicSession();
+  const isAdmin = appUser?.role === "admin";
   const [view, setView] = useState<View>({ kind: "grades" });
   const [hodGrades, setHodGrades] = useState<string[]>([]);
+  const [hods, setHods] = useState<User[]>([]);
 
   const [sections, setSections] = useState<Section[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -45,25 +51,81 @@ export default function ClassManagement() {
 
   useEffect(() => {
     if (!appUser) return;
-    const grades = (appUser.assignedGrades as string[] | undefined) ?? [];
-    setHodGrades(grades.sort((a, b) => Number(a) - Number(b)));
-  }, [appUser]);
+    if (isAdmin) {
+      const loadAdminGradesAndHods = async () => {
+        try {
+          const [hodSnap, secSnap, subSnap] = await Promise.all([
+            getDocs(query(collection(db, "users"), where("role", "==", "hod"))),
+            getDocs(collection(db, "sections")),
+            getDocs(collection(db, "subjects")),
+          ]);
+          const loadedHods = hodSnap.docs.map((d) => ({ id: d.id, ...d.data() } as User));
+          setHods(loadedHods);
+
+          const gradeSet = new Set<string>(DEFAULT_GRADES);
+          secSnap.docs.forEach((d) => {
+            const g = d.data().grade;
+            if (g) gradeSet.add(String(g));
+          });
+          subSnap.docs.forEach((d) => {
+            const g = d.data().grade;
+            if (g) gradeSet.add(String(g));
+          });
+          loadedHods.forEach((h) => {
+            (h.assignedGrades as string[] | undefined)?.forEach((g) => {
+              if (g) gradeSet.add(String(g));
+            });
+          });
+          const sorted = Array.from(gradeSet).sort((a, b) => {
+            const numA = Number(a);
+            const numB = Number(b);
+            if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+            return a.localeCompare(b);
+          });
+          setHodGrades(sorted);
+        } catch (e) {
+          console.error("Failed to load admin grades/hods:", e);
+          setHodGrades(DEFAULT_GRADES);
+        }
+      };
+      loadAdminGradesAndHods();
+    } else {
+      const grades = (appUser.assignedGrades as string[] | undefined) ?? [];
+      setHodGrades(grades.sort((a, b) => Number(a) - Number(b)));
+    }
+  }, [appUser, isAdmin]);
 
   const loadSections = async (grade: string) => {
     if (!appUser) return;
-    const q = query(
-      collection(db, "sections"),
-      where("grade", "==", grade),
-      where("hodId", "==", appUser.id)
-    );
-    const snap = await getDocs(q);
-    setSections(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Section)));
+    try {
+      const q = query(collection(db, "sections"), where("grade", "==", grade));
+      const snap = await getDocs(q);
+      let loaded = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Section));
+      if (!isAdmin) {
+        loaded = loaded.filter(
+          (s) => s.hodId === appUser.id || !s.hodId || (appUser.assignedGrades || []).includes(grade)
+        );
+      }
+      loaded.sort((a, b) => a.name.localeCompare(b.name));
+      setSections(loaded);
+    } catch (e) {
+      console.error("Failed to load sections:", e);
+    }
   };
 
   const loadTeachers = async () => {
     if (!appUser) return;
-    const snap = await getDocs(query(collection(db, "teachers"), where("hodIds", "array-contains", appUser.id)));
-    setTeachers(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Teacher)));
+    try {
+      let snap;
+      if (isAdmin) {
+        snap = await getDocs(collection(db, "teachers"));
+      } else {
+        snap = await getDocs(query(collection(db, "teachers"), where("hodIds", "array-contains", appUser.id)));
+      }
+      setTeachers(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Teacher)));
+    } catch (e) {
+      console.error("Failed to load teachers:", e);
+    }
   };
 
   const loadSubjectsData = async (grade: string, section: Section) => {
@@ -78,7 +140,7 @@ export default function ClassManagement() {
 
   const loadStudentsData = async (section: Section) => {
     if (!appUser) return;
-    const list = await loadStudentsForSection(section.id);
+    const list = await loadStudentsForSection(section.id, workingSession?.name);
     setSectionStudents(list);
   };
 
@@ -87,7 +149,7 @@ export default function ClassManagement() {
     if (view.kind === "subjects") { loadSubjectsData(view.grade, view.section); loadTeachers(); }
     if (view.kind === "students") loadStudentsData(view.section);
     if (view.kind === "class-teacher") loadTeachers();
-  }, [view]);
+  }, [view, workingSession?.name]);
 
   const addSection = async (grade: string) => {
     if (!appUser) return;
@@ -97,9 +159,21 @@ export default function ClassManagement() {
     setAddSectionError("");
     setSaving(true);
     try {
-      const docRef = await addDoc(collection(db, "sections"), { grade, name, hodId: appUser.id });
-      setSections((prev) => [...prev, { id: docRef.id, grade, name, hodId: appUser.id }]);
+      let targetHodId = appUser.id;
+      if (isAdmin) {
+        const matchingHod = hods.find((h) => (h.assignedGrades as string[] | undefined)?.includes(grade));
+        targetHodId = matchingHod?.id || appUser.id;
+      }
+      const docRef = await addDoc(collection(db, "sections"), {
+        grade,
+        name,
+        hodId: targetHodId,
+        createdAt: new Date().toISOString(),
+      });
+      setSections((prev) => [...prev, { id: docRef.id, grade, name, hodId: targetHodId }]);
       setAddSectionInput("");
+    } catch (err: any) {
+      setAddSectionError(err?.message || "Failed to add section.");
     } finally {
       setSaving(false);
     }
@@ -150,7 +224,7 @@ export default function ClassManagement() {
 
   const removeStudent = async (student: Student) => {
     if (!confirm(`Remove ${student.name} from this section?`)) return;
-    const en = await getActiveEnrollment(student.id);
+    const en = await getActiveEnrollment(student.id, workingSession?.name);
     if (en) {
       await updateDoc(doc(db, "enrollments", en.id), { sectionId: null, sectionName: null });
     }
@@ -217,7 +291,9 @@ export default function ClassManagement() {
         hodGrades.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
-              No grades assigned. Contact admin to assign grades.
+              {isAdmin
+                ? "No grades configured. Please check subjects or admissions."
+                : "No grades assigned. Contact admin to assign grades."}
             </CardContent>
           </Card>
         ) : (
@@ -239,10 +315,19 @@ export default function ClassManagement() {
       )}
 
       {/* Section Picker */}
-      {view.kind === "section-picker" && (
-        <div className="space-y-4">
-          <p className="text-sm font-semibold text-muted-foreground">GRADE {view.grade} — SECTIONS</p>
-          <div className="flex flex-wrap gap-3">
+      {view.kind === "section-picker" && (() => {
+        const matchingHod = hods.find((h) => (h.assignedGrades as string[] | undefined)?.includes(view.grade));
+        return (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-muted-foreground">GRADE {view.grade} — SECTIONS</p>
+              {isAdmin && (
+                <div className="text-xs text-muted-foreground bg-muted/60 px-3 py-1 rounded-full border border-border">
+                  Section Head (HOD): <strong className="text-foreground">{matchingHod?.name ?? "Unassigned"}</strong>
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-3">
             {sections.map((sec) => (
               <div key={sec.id} className="flex items-center gap-1 group">
                 <Card
@@ -285,7 +370,8 @@ export default function ClassManagement() {
             <p className="text-sm text-muted-foreground">No sections yet. Add one above.</p>
           )}
         </div>
-      )}
+      );
+    })()}
 
       {/* Section Options */}
       {view.kind === "section-options" && (() => {
@@ -462,7 +548,9 @@ export default function ClassManagement() {
           {teachers.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center text-muted-foreground">
-                No teachers under your HOD account. Ask admin to assign teachers to you.
+                {isAdmin
+                  ? "No teachers found. Please add teachers in the Admin panel."
+                  : "No teachers under your HOD account. Ask admin to assign teachers to you."}
               </CardContent>
             </Card>
           ) : (
@@ -513,7 +601,9 @@ export default function ClassManagement() {
           </DialogHeader>
           <div className="space-y-2">
             {teachers.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No teachers under your HOD account.</p>
+              <p className="text-sm text-muted-foreground">
+                {isAdmin ? "No teachers found." : "No teachers under your HOD account."}
+              </p>
             ) : (
               teachers.map((t) => (
                 <button
