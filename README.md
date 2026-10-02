@@ -1,251 +1,289 @@
 # Prestige International School ERP
 
-A production-ready School ERP system with multi-role authentication, marks management, report card workflow with digital signatures, RFID-based attendance, and in-app + email notifications.
+A production-grade, multi-tenant hybrid School ERP system combining **Firebase** (Auth, Firestore canonical database, FCM, Cloud Functions) and **Cloudflare** (Workers edge API, R2 object storage, WAF/CDN).
 
 ---
 
-## Tech Stack
+## Architecture Overview
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, TypeScript, Vite, TailwindCSS v4 |
-| Auth & DB | Firebase (Firestore + Firebase Auth) |
-| Backend API | FastAPI + Firebase Admin SDK (Firestore) |
-| Cloud Functions | Node.js 18 + Nodemailer (email notifications) |
-| PDF Generation | jsPDF |
+```
+                      ┌──────────────────────────────────────┐
+                      │        Vite React Frontend           │
+                      └──────────────┬───────────────────────┘
+                                     │
+           ┌─────────────────────────┼─────────────────────────┐
+           │ (User Identity & Auth)  │ (Edge Files & API)      │ (Realtime DB & State)
+           ▼                         ▼                         ▼
+┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
+│ Firebase Auth       │   │ Cloudflare Workers  │   │ Cloud Firestore     │
+│ (Identity & Creds)  │   │ Edge API & Routing  │   │ Canonical Database  │
+└─────────────────────┘   └──────────┬──────────┘   └──────────┬──────────┘
+                                     │                         │
+                                     ▼                         ▼
+                          ┌─────────────────────┐   ┌─────────────────────┐
+                          │ Cloudflare R2       │   │ Firebase Functions  │
+                          │ Binary Object Store │   │ Triggers & Alerts   │
+                          └─────────────────────┘   └─────────────────────┘
+```
+
+| Layer | Responsibility | Technology |
+|-------|----------------|------------|
+| **Frontend** | Responsive SPA | React 18, TypeScript, Vite, Tailwind CSS v4, Lucide Icons |
+| **Authentication** | User identity, password ownership, password reset | Firebase Authentication |
+| **Primary Database** | Canonical ERP database & source of truth | Cloud Firestore |
+| **Edge API & Files** | Secure file upload/download, capability discovery, webhooks | Cloudflare Workers (TypeScript) |
+| **Object Storage** | Student photos, signatures, PDFs, receipts, admit cards | Cloudflare R2 Storage (S3-compatible, zero egress) |
+| **Background Tasks**| Email & WhatsApp notification triggers, payment order intents | Firebase Cloud Functions (Node.js 18) |
+| **Edge Security**   | WAF, rate limiting, CORS allowlist, MIME & size enforcement | Cloudflare Edge / Workers |
+
+---
+
+## Core Modules & Capabilities
+
+### 1. Fee Management & Ledger System
+- **Term-to-Installment Hierarchy**: Fee structures support parent Terms (Term 1, Term 2, etc.) grouping individual dated installments with fee head breakdowns.
+- **Individualized Student Assignments**: Fee structures assignable to students with custom concessions, scholarship discounts, and preserved historical versioning.
+- **Atomic Double-Entry Ledger**: Immutable transaction logging for tuition charges, concessions, waivers, counter payments, and online receipts.
+- **Optional Razorpay Online Payment Gateway**:
+  - **Graceful Degradation**: If Razorpay credentials are not configured in the active environment, the portal **automatically detects** capability and presents a polished, intentional **"Coming Soon"** state directing students and parents to the school counter.
+  - **Zero Secrets Exposure**: Private secrets (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) never leave the backend. Only the public `keyId` is exposed when active.
+  - **Cryptographic Verification**: Webhook and client payment verifications utilize server-side HMAC-SHA256 signatures with constant-time equality comparisons.
+  - **Counter Desk Mode**: Accounts staff record Cash, Cheque, UPI, and Bank Transfer counter payments with instantaneous atomic receipt generation (`RC-CTR-YYYY-XXXXXX`).
+
+### 2. Examination & Admit Card (Hall Ticket) Engine
+- **CBSE-Compliant PDF Admit Cards**: Auto-generates formal hall tickets featuring school and CBSE emblems, student photo, exam timetable, venue, and official candidate conduct rules.
+- **Principal E-Signature Verification**: Finalization and batch generation strictly require an approved, active Principal signature.
+- **Fee Clearance Gate**: Automatically assesses student fee clearance before hall ticket release; supports administrative bypass requests with review notes.
+- **Cryptographic Verification QR**: Admit cards contain verifiable QR codes for exam hall invigilators.
+
+### 3. Report Card & Marks Workflow
+- **Multi-Tier Signing Chain**: Draft generation by Class Teacher → Review & signing by HOD → Final approval & seal by Principal → Publication to Student Portal.
+- **Automated Alerts**: Email and WhatsApp alerts triggered automatically for missing subject marks.
+
+### 4. RFID Attendance System
+- **IoT Hardware Integration**: ESP32 / Arduino devices submit attendance scans via HTTP POST.
+- **Daily Aggregation**: One attendance record per student per day with real-time cashier and class dashboards.
+
+### 5. P0 Security Architecture & Plaintext Password Elimination
+- **Zero Firestore Passwords**: Firestore Security Rules strictly reject any document creation or update containing `password`, `plainPassword`, `tempPassword`, `passwordHash`, or `salt`.
+- **API Response Sanitizer**: The Cloudflare Worker API strips sensitive credential and token fields from all output.
+- **Native Firebase Auth Password Reset**: Self-service forgot-password and reset workflows operate entirely through Firebase Auth oob codes.
 
 ---
 
 ## Project Structure
 
 ```
-project-root/
-├── src/                      # React frontend source
-│   ├── components/           # UI components (shadcn/ui)
-│   │   ├── ui/               # Base UI components
-│   │   └── timetable/        # Timetable sheet component
-│   ├── contexts/             # AuthContext (Firebase Auth)
-│   ├── hooks/                # Custom hooks (toast, mobile)
-│   ├── lib/                  # Firebase config, types, utilities
-│   │   ├── firebase.ts       # Firebase initialization
-│   │   ├── types.ts          # TypeScript interfaces
-│   │   ├── fees.ts           # Fee calculation helpers
-│   │   ├── generateReportCardPdf.ts  # Report card PDF generator
-│   │   └── generateQPPdf.ts  # Question paper PDF generator
-│   └── pages/                # Page components by role
-│       ├── admin/            # Admin pages (teachers, students, subjects, etc.)
-│       ├── hod/              # HOD pages (class management, exams, etc.)
-│       ├── teacher/          # Teacher pages (marks entry, report cards)
-│       ├── student/          # Student pages (fees, report card)
-│       └── accounts/         # Accountant pages (fees, collections)
-├── public/                   # Static assets (logo, favicon)
-├── backend/                  # FastAPI backend (RFID attendance)
-│   ├── server.py             # Main API server
-│   ├── requirements.txt      # Python dependencies
-│   └── .env.example          # Backend environment template
-├── functions/                # Firebase Cloud Functions
-│   ├── index.js              # Email notification function
-│   ├── package.json          # Node.js dependencies
-│   └── README.md             # Deployment instructions
-├── index.html                # HTML entry point
-├── package.json              # Frontend dependencies
-├── vite.config.ts            # Vite configuration
-├── tsconfig.json             # TypeScript configuration
-├── components.json           # shadcn/ui config
-├── firebase.json             # Firebase hosting config
-├── .firebaserc               # Firebase project config
-├── .env.example              # Frontend environment template
-└── README.md                 # This file
+.
+├── src/                          # Frontend React source
+│   ├── components/               # UI components
+│   │   ├── ui/                   # Primitive design system (shadcn/ui)
+│   │   ├── OnlinePaymentStatus.tsx # Coming Soon, Maintenance & Status Badges
+│   │   ├── FeeReceiptModal.tsx   # Printable PDF fee receipt modal
+│   │   └── Layout.tsx            # Navigation & role-based sidebar
+│   ├── contexts/                 # React contexts (AuthContext, SessionContext)
+│   ├── lib/                      # Core business logic & SDK integrations
+│   │   ├── payments.ts           # Capability discovery & online payment flow
+│   │   ├── objectStorage.ts      # Cloudflare R2 unified storage client
+│   │   ├── r2StorageKeys.ts      # Deterministic tenant-isolated R2 keys
+│   │   ├── feeLedger.ts          # Atomic fee ledger & transactions
+│   │   ├── fees.ts               # Term hierarchy & installment calculations
+│   │   ├── hallTicketEngine.ts   # Exam eligibility & admit card engine
+│   │   ├── generateHallTicketPdf.ts # CBSE hall ticket PDF generator
+│   │   └── firebase.ts           # Firebase client initialization
+│   └── pages/                    # Role-specific application views
+│       ├── admin/                # Principal & Admin management views
+│       ├── hod/                  # Head of Department & exam coordination
+│       ├── teacher/              # Teacher marks entry & attendance
+│       ├── accounts/             # Fee structures, collections, assignments
+│       └── student/              # Student fees, admit cards, report cards
+├── worker/                       # Cloudflare Worker Edge API
+│   ├── src/
+│   │   ├── index.ts              # Fetch router, CORS, capabilities, webhooks
+│   │   ├── auth.ts               # Firebase ID token verification
+│   │   ├── rbac.ts               # Role-based access control & IDOR guards
+│   │   └── types.ts              # Worker environment bindings
+│   ├── wrangler.toml             # Cloudflare Wrangler configuration
+│   └── package.json
+├── functions/                    # Firebase Cloud Functions (v2 triggers)
+│   ├── index.js                  # Email notifications & fallback payment intents
+│   └── package.json
+├── scripts/                      # Automated test suites & migration utilities
+│   ├── test_optional_razorpay_flow.ts # Razorpay optional flow & Coming Soon tests
+│   ├── test_password_security.ts      # P0 password elimination tests
+│   ├── test_cloudflare_migration.ts   # R2 storage & Worker edge tests
+│   ├── test_production_security.ts    # Ledger security & IDOR protection tests
+│   ├── test_hall_ticket_esign.ts      # Admit card signature & PDF tests
+│   ├── test_fee_structure_term_hierarchy.ts # Term hierarchy & concession tests
+│   └── test_reset_and_auth.ts         # Password reset & auth validation tests
+├── firestore.rules               # Authoritative Firestore Security Rules
+├── storage.rules                 # Firebase Storage Rules (locked in production)
+├── package.json
+└── README.md
 ```
 
 ---
 
-## Prerequisites
+## Setup & Local Development
 
-- **Node.js** 18+ and **npm** (or yarn)
-- **Python** 3.10+ and **pip**
-- **Firebase** project (for auth and Firestore)
-- **Firebase service account key** saved at `backend/serviceAccountKey.json`
+### Prerequisites
+- **Node.js** 18+ and **npm**
+- **Cloudflare Wrangler CLI** (`npm install -g wrangler`)
+- **Firebase CLI** (`npm install -g firebase-tools`)
+- A Firebase project with Authentication and Firestore enabled
+- A Cloudflare account with an R2 bucket created
 
----
-
-## Setup Instructions
-
-### 1. Install Frontend Dependencies
+### 1. Install Dependencies
 
 ```bash
+# Frontend dependencies
 npm install
+
+# Cloudflare Worker dependencies
+cd worker && npm install && cd ..
+
+# Firebase Functions dependencies
+cd functions && npm install && cd ..
 ```
 
-### 2. Configure Environment
+### 2. Frontend Configuration (`.env`)
 
-Copy `.env.example` to `.env` and fill in your Firebase credentials:
+Create a `.env` file in the project root:
 
-```bash
-cp .env.example .env
+```env
+VITE_FIREBASE_API_KEY=your_firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_firebase_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+
+# Cloudflare Worker endpoint (optional in dev, required in production)
+VITE_WORKER_URL=http://localhost:8787
+
+# Razorpay Public Key (optional; set if Razorpay is active)
+VITE_RAZORPAY_KEY_ID=
 ```
 
-Get your Firebase config from:
-**Firebase Console → Project Settings → General → Your Apps → Config**
+### 3. Cloudflare Worker Configuration (`worker/wrangler.toml`)
 
-### 3. Run Frontend (Development)
+Configure `worker/wrangler.toml`:
+
+```toml
+name = "prestige-erp-worker"
+main = "src/index.ts"
+compatibility_date = "2024-04-01"
+
+[vars]
+ENVIRONMENT = "development"
+SCHOOL_ID = "prestige"
+ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:5173"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "prestige-erp-storage"
+```
+
+Set worker secrets via Wrangler:
 
 ```bash
+cd worker
+wrangler secret put FIREBASE_PROJECT_ID
+wrangler secret put RAZORPAY_KEY_SECRET     # Optional
+wrangler secret put RAZORPAY_WEBHOOK_SECRET  # Optional
+```
+
+### 4. Running the Development Environment
+
+```bash
+# Terminal 1: Run Cloudflare Worker
+cd worker
+npm run dev
+
+# Terminal 2: Run React Frontend
 npm run dev
 ```
 
-The app starts at **http://localhost:3000**
+The application will be accessible at `http://localhost:3000`.
 
-### 4. Setup Backend (RFID Attendance API)
+---
+
+## Production Deployment
+
+### 1. Deploy Cloudflare Worker & R2
 
 ```bash
-cd backend
-pip install -r requirements.txt
-cp .env.example .env
-# Place your Firebase service account JSON at backend/serviceAccountKey.json
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
+cd worker
+wrangler deploy
 ```
 
-The API starts at **http://localhost:8001**
+Set the production `VITE_WORKER_URL` in your frontend environment to the worker's route (e.g. `https://api.yourdomain.com`).
 
-### 5. Build for Production
+### 2. Deploy Firestore Rules & Indexes
 
 ```bash
-npm run build
+firebase deploy --only firestore:rules,firestore:indexes
 ```
 
-Output goes to `dist/` folder.
-
-### 6. Deploy to Firebase Hosting
+### 3. Deploy Cloud Functions
 
 ```bash
-npm install -g firebase-tools
-firebase login
-firebase deploy --only hosting
-```
-
-### 7. Deploy Cloud Functions (Email Notifications)
-
-See `functions/README.md` for detailed instructions:
-
-```bash
-cd functions
-npm install
 firebase deploy --only functions
 ```
 
----
+### 4. Build & Deploy Frontend
 
-## User Roles
-
-| Role | Access |
-|------|--------|
-| **Admin** (Principal) | Full access, manages teachers/students/subjects, signs report cards as principal, manages signatures, RFID card assignment |
-| **HOD** | Class/section management, exam scheduling, timetable, report card review + publish |
-| **Teacher** | Marks entry, report card generation + signing, question papers |
-| **Student** | View published report cards, fees, timetable |
-| **Accountant** | Fee structures, collections |
-
----
-
-## Key Features
-
-### Exam Structure (Hardcoded)
-- Unit Test 1 → marks only
-- Term 1 → marks only
-- Unit Test 2 → marks only
-- Final Exam → used for **report card generation**
-
-### Report Card Workflow
-```
-Class Teacher generates (draft)
-    → Class Teacher signs (teacher_signed)
-        → HOD signs (hod_signed)
-            → Admin/Principal signs (principal_signed)
-                → HOD publishes (published) → Student can view
-```
-
-### Marks Entry
-- One record per (studentId + subjectId + examId) — enforced uniqueness
-- Inline marks entry for class teacher's own missing subjects
-- Missing subjects detection with teacher notifications
-
-### Signature System
-- Admin uploads signature images for: Class Teacher, HOD, Principal
-- Signatures embedded in report card PDF (left/center/right layout)
-
-### RFID Attendance
-- ESP32 sends `POST /api/rfid-scan` with `{uid, deviceId, timestamp}`
-- One attendance record per student per day
-- Admin assigns RFID cards to students via UI (`/admin/rfid-cards`)
-
-### Notifications
-- In-app notification bell with unread count
-- "Notify Teachers" sends alerts for missing marks
-- Firebase Cloud Function sends email notifications
-
----
-
-## API Endpoints (RFID Backend)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/rfid-scan` | ESP32 scan — marks attendance |
-| `POST` | `/api/rfid-cards` | Assign RFID card to student |
-| `DELETE` | `/api/rfid-cards/{uid}` | Remove card assignment |
-| `GET` | `/api/rfid-cards` | List all assigned cards |
-| `GET` | `/api/attendance?date=YYYY-MM-DD` | Get attendance records |
-| `GET` | `/api/attendance/today-count` | Today's scan count |
-
-### ESP32 Example
-
-```cpp
-// Arduino / ESP32 HTTP POST
-HTTPClient http;
-http.begin("https://your-server.com/api/rfid-scan");
-http.addHeader("Content-Type", "application/json");
-String body = "{\"uid\":\"" + cardUID + "\",\"deviceId\":\"ESP32-01\",\"timestamp\":\"08:30:00\"}";
-int code = http.POST(body);
+```bash
+npm run build
+firebase deploy --only hosting
 ```
 
 ---
 
-## First-Time Setup
+## Automated Test Suites
 
-1. Run the app and go to `/setup`
-2. Create the admin account (this is your principal login)
-3. Log in as admin
-4. Add teachers, students, subjects, and sections
-5. Assign class teachers and subject teachers
-6. Upload signatures at `/admin/signatures`
-7. Assign RFID cards at `/admin/rfid-cards`
-8. Class teachers monitor attendance at `/teacher/rfid-attendance` and mark manual attendance at `/teacher/manual-attendance`
+The codebase includes comprehensive automated test suites verifying all security, storage, ledger, and capability flows:
+
+```bash
+# Run Optional Razorpay Provider & Coming Soon degradation tests (29 tests)
+npx tsx scripts/test_optional_razorpay_flow.ts
+
+# Run P0 Password Security & Sanitization tests (32 tests)
+npx tsx scripts/test_password_security.ts
+
+# Run Cloudflare R2 Migration, Path Traversal & RBAC tests (49 tests)
+npx tsx scripts/test_cloudflare_migration.ts
+
+# Run Production Ledger, Idempotency & IDOR Protection tests (23 tests)
+npx tsx scripts/test_production_security.ts
+
+# Run Hall Ticket E-Signature & PDF Template tests (28 tests)
+npx tsx scripts/test_hall_ticket_esign.ts
+
+# Run Fee Structure Term Hierarchy & Concession tests (48 tests)
+npx tsx scripts/test_fee_structure_term_hierarchy.ts
+
+# Run Authentication & Password Reset validation tests (30 tests)
+npx tsx scripts/test_reset_and_auth.ts
+```
+
+All **239 tests** pass with 0 failures.
 
 ---
 
-## Firebase Collections
+## Role & Permission Matrix
 
-| Collection | Purpose |
-|-----------|---------|
-| `users` | Auth user records with roles |
-| `teachers` | Teacher profiles |
-| `students` | Student records |
-| `sections` | Grade sections with class teacher |
-| `subjects` | Subject definitions per grade |
-| `subjectAssignments` | Teacher-subject-section mapping |
-| `marks` | Student marks (unique per student+exam+subject) |
-| `reportCards` | Report cards with status workflow |
-| `signatures` | Uploaded signature images |
-| `notifications` | In-app notification messages |
-| `exams` | Exam scheduling records |
-| `timetables` | Section timetables |
-| `feeStructures` | Class fee definitions |
-| `feePayments` | Payment records |
-| `rfidCards` | RFID card assignments for students |
-| `attendance` | RFID attendance records |
+| Role | Module Access | Capabilities |
+|------|---------------|--------------|
+| **Admin (Principal)** | Complete ERP Access | Staff provisioning, academic session planner, official signatory, fee concessions approval, hall ticket finalization |
+| **HOD** | Academic Management | Class & section management, exam scheduling, report card review, attendance oversight |
+| **Teacher** | Class & Subject Desk | Daily RFID/manual attendance, marks entry, report card draft generation |
+| **Accountant** | Financial Desk | Fee structures with term hierarchy, individualized student fee assignments, atomic counter collections, receipt issuance |
+| **Student** | Student Portal | Academic report cards, examination admit cards, fee schedule breakdown, online payment / counter status |
+| **Parent** | Parent Portal | Multi-child tracking, fee statements, attendance logs, report card downloads |
 
 ---
 
 ## License
 
-Private — Prestige International School
+Private and Confidential — Prestige International School. All rights reserved.
