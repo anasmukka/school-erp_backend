@@ -18,6 +18,12 @@ import SchoolTimetableSheet, { SchoolTimetableSheetSlot } from "@/components/tim
 import { useAcademicSession } from "@/contexts/AcademicSessionContext";
 import { Badge } from "@/components/ui/badge";
 import UpcomingEventsWidget from "@/components/calendar/UpcomingEventsWidget";
+import {
+  resolveStudentLibraryIdentifiers,
+  getLibraryFineRules,
+  calculateStudentLibrarySummary,
+} from "@/lib/library";
+import { LibraryTransaction } from "@/lib/types";
 
 interface StudentTimetableSlot {
   id: string;
@@ -91,6 +97,11 @@ export default function Dashboard() {
   const [upcomingExam, setUpcomingExam] = useState<any | null>(null);
   const [timetableSlots, setTimetableSlots] = useState<StudentTimetableSlot[]>([]);
   const [assignedSubjects, setAssignedSubjects] = useState<StudentAssignedSubject[]>([]);
+  const [librarySummary, setLibrarySummary] = useState<{
+    borrowedCount: number;
+    dueSoonCount: number;
+    overdueCount: number;
+  } | null>(null);
   const studentTimetableSheetSlots = useMemo(
     () =>
       timetableSlots.map((slot, index) => ({
@@ -221,6 +232,28 @@ export default function Dashboard() {
               } as StudentTimetableSlot;
             }).sort(sortByDayAndPeriod);
             setTimetableSlots(mappedSlots);
+          }
+
+          // Fetch Library summary for student widget
+          try {
+            const identity = await resolveStudentLibraryIdentifiers(appUser.id, appUser.email);
+            if (identity.allIdentifiers.length > 0) {
+              const rules = await getLibraryFineRules();
+              const libQ = query(
+                collection(db, "libraryTransactions"),
+                where("memberId", "in", identity.allIdentifiers.slice(0, 10))
+              );
+              const libSnap = await getDocs(libQ);
+              const txs = libSnap.docs.map((d) => d.data() as LibraryTransaction);
+              const summary = calculateStudentLibrarySummary(txs, rules);
+              setLibrarySummary({
+                borrowedCount: summary.borrowedCount,
+                dueSoonCount: summary.dueSoonCount,
+                overdueCount: summary.overdueCount,
+              });
+            }
+          } catch (libErr) {
+            console.error("Failed to load student library summary for dashboard:", libErr);
           }
         }
       }
@@ -431,6 +464,47 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Library Summary Widget */}
+        <div className="glass-card-strong rounded-2xl p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="h-11 w-11 rounded-xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0">
+              <BookOpen size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-bold text-base text-slate-900">Institutional Library</p>
+                {librarySummary && librarySummary.overdueCount > 0 ? (
+                  <span className="bg-rose-100 text-rose-800 text-[10px] font-semibold px-2 py-0.5 rounded-full">
+                    {librarySummary.overdueCount} Overdue
+                  </span>
+                ) : librarySummary && librarySummary.dueSoonCount > 0 ? (
+                  <span className="bg-amber-100 text-amber-800 text-[10px] font-semibold px-2 py-0.5 rounded-full">
+                    {librarySummary.dueSoonCount} Due Soon
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {librarySummary
+                  ? librarySummary.borrowedCount === 0
+                    ? "📚 You currently have no borrowed books"
+                    : `📚 ${librarySummary.borrowedCount} ${librarySummary.borrowedCount === 1 ? "Book" : "Books"} Borrowed` +
+                      (librarySummary.overdueCount > 0
+                        ? ` • ⚠️ ${librarySummary.overdueCount} overdue`
+                        : librarySummary.dueSoonCount > 0
+                        ? ` • ⚠️ ${librarySummary.dueSoonCount} due soon`
+                        : " • All returns on track")
+                  : "Track your borrowed books, upcoming due dates, and reading records"}
+              </p>
+            </div>
+          </div>
+          <Link href="/student/library">
+            <a className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 py-2 bg-primary text-white rounded-xl hover:bg-primary/90 transition-all shrink-0">
+              <span>View Library</span>
+              <ArrowUpRight size={14} />
+            </a>
+          </Link>
+        </div>
+
         <UpcomingEventsWidget />
 
         <div>
@@ -492,8 +566,9 @@ export default function Dashboard() {
 
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Quick Actions</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             <GlassQuickLink href="/student/calendar" label="School Calendar" desc="View school events, activities & exams" icon={<CalendarDays size={20} className="text-primary" />} />
+            <GlassQuickLink href="/student/library" label="School Library" desc="View borrowed books, due dates & history" icon={<BookOpen size={20} className="text-violet-500" />} />
             <GlassQuickLink href="/student/exams" label="Exam Timetable" desc="View approved examination schedule" icon={<CalendarDays size={20} className="text-indigo-500" />} />
             <GlassQuickLink href="/student/fees" label="My Fees" desc="Check fee schedule, dues, and payment history" icon={<CreditCard size={20} className="text-emerald-500" />} />
             <GlassQuickLink href="/student/assignments" label="Assignments" desc="View homework, projects, and activities" icon={<FileText size={20} className="text-blue-500" />} />

@@ -3,3 +3,6 @@ backend/.vendor/
 backend/__pycache__/
 backend/serviceAccountKey.json
 node_modules
+node_modules/.vite/
+scratch/
+*.pdf

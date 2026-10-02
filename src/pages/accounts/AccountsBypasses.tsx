@@ -13,6 +13,7 @@ import type {
   ExamSchedule,
   FeePayment,
   FeeStructure,
+  StudentFeeAssignment,
   HallTicketBypass,
   HallTicketGlobalSettings,
   HallTicketRule,
@@ -57,6 +58,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { SearchInput } from "@/components/ui/SearchInput";
 import {
   ShieldAlert,
   ShieldCheck,
@@ -90,6 +92,7 @@ export default function AccountsBypasses() {
   const [students, setStudents] = useState<Student[]>([]);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [feeStructures, setFeeStructures] = useState<FeeStructure[]>([]);
+  const [studentAssignments, setStudentAssignments] = useState<StudentFeeAssignment[]>([]);
   const [feePayments, setFeePayments] = useState<FeePayment[]>([]);
   const [globalSettings, setGlobalSettings] = useState<HallTicketGlobalSettings | null>(null);
   const [rules, setRules] = useState<HallTicketRule[]>([]);
@@ -161,6 +164,7 @@ export default function AccountsBypasses() {
         studentsSnap,
         enrollmentsSnap,
         structuresSnap,
+        assignmentsSnap,
         paymentsSnap,
         settings,
         rulesList,
@@ -174,6 +178,14 @@ export default function AccountsBypasses() {
           )
         ),
         getDocs(query(collection(db, "feeStructures"), where("grade", "==", schedGrade))),
+        getDocs(
+          query(
+            collection(db, "studentFeeAssignments"),
+            where("grade", "==", schedGrade),
+            where("sessionId", "==", targetSession),
+            where("status", "==", "active")
+          )
+        ),
         getDocs(query(collection(db, "feePayments"), where("grade", "==", schedGrade))),
         getHallTicketGlobalSettings(),
         listHallTicketRules(targetSession),
@@ -182,6 +194,7 @@ export default function AccountsBypasses() {
       setStudents(studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Student)));
       setEnrollments(enrollmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Enrollment)));
       setFeeStructures(structuresSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeStructure)));
+      setStudentAssignments(assignmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentFeeAssignment)));
       setFeePayments(paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeePayment)));
       setGlobalSettings(settings);
       setRules(rulesList);
@@ -216,6 +229,10 @@ export default function AccountsBypasses() {
       const payments = feePayments.filter(
         (p) => p.studentId === stu.id || (stu.uid && p.studentId === stu.uid)
       );
+      const studentAssignment = studentAssignments.find(
+        (a) => a.studentId === stu.id || a.studentUid === stu.id || (stu.uid && (a.studentUid === stu.uid || a.studentId === stu.uid || (a as any).authUid === stu.uid))
+      ) || null;
+
       const approvedBypass =
         bypasses.find(
           (b) =>
@@ -229,6 +246,7 @@ export default function AccountsBypasses() {
         enrollment: en,
         schedule: currentSchedule,
         feeStructure: matchedFeeStructure,
+        studentFeeAssignment: studentAssignment,
         studentPayments: payments,
         globalSettings,
         examRule: currentExamRule,
@@ -237,7 +255,7 @@ export default function AccountsBypasses() {
     });
 
     return evals.filter((item) => item.status === "blocked");
-  }, [students, enrollments, feePayments, bypasses, currentSchedule, globalSettings, currentExamRule, matchedFeeStructure]);
+  }, [students, enrollments, feePayments, studentAssignments, bypasses, currentSchedule, globalSettings, currentExamRule, matchedFeeStructure]);
 
   // Filtered bypass list
   const filteredBypasses = useMemo(() => {
@@ -533,13 +551,13 @@ export default function AccountsBypasses() {
                 </Button>
               </div>
 
-              <div className="relative w-44">
-                <Search className="absolute left-2.5 top-2.5 h-3 w-3 text-muted-foreground" />
-                <Input
+              <div className="w-48">
+                <SearchInput
                   placeholder="Search student..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-7 h-7 text-xs bg-white"
+                  onChange={setSearchQuery}
+                  className="h-8 text-xs bg-white"
+                  showShortcutHint={false}
                 />
               </div>
             </div>

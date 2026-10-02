@@ -31,6 +31,9 @@ import {
   Layers,
   Award,
   FileSpreadsheet,
+  FileSignature,
+  User,
+  UserCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAcademicSession } from "@/contexts/AcademicSessionContext";
@@ -45,6 +48,8 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: "Dashboard", href: "/", icon: <LayoutDashboard size={18} />, roles: ["admin", "hod", "teacher", "student", "accountant", "printing", "operations"] },
+  { label: "My Profile", href: "/profile", icon: <User size={18} />, roles: ["admin", "hod", "teacher", "student", "accountant", "printing", "operations"] },
+  { label: "Profile Change Requests", href: "/admin/profile-requests", icon: <UserCheck size={18} />, roles: ["admin"] },
   { label: "Printing Orders", href: "/printing", icon: <Printer size={18} />, roles: ["operations", "printing"] },
   { label: "Print Requests", href: "/printing/orders", icon: <Printer size={18} />, roles: ["teacher", "hod"] },
   { label: "Library", href: "/library", icon: <BookOpen size={18} />, roles: ["operations", "teacher", "hod"] },
@@ -64,18 +69,21 @@ const navItems: NavItem[] = [
   { label: "Student Promotion", href: "/admin/promotion", icon: <GraduationCap size={18} />, roles: ["admin"] },
   { label: "Exam Approvals", href: "/admin/exam-approvals", icon: <ClipboardCheck size={18} />, roles: ["admin"] },
   { label: "Hall Tickets", href: "/admin/hall-tickets", icon: <FileText size={18} />, roles: ["admin"] },
+  { label: "E-Signatures", href: "/admin/signatures", icon: <FileSignature size={18} />, roles: ["admin"] },
   { label: "Notices", href: "/admin/notices", icon: <Bell size={18} />, roles: ["admin"] },
   { label: "RFID Cards", href: "/admin/rfid-cards", icon: <Wifi size={18} />, roles: ["admin"] },
   { label: "ID Cards", href: "/id-cards", icon: <Contact size={18} />, roles: ["admin", "hod"] },
-  { label: "Fees", href: "/accounts/fees", icon: <CreditCard size={18} />, roles: ["accountant"] },
-  { label: "Collections", href: "/accounts/collections", icon: <FileText size={18} />, roles: ["accountant"] },
-  { label: "Hall Ticket Bypasses", href: "/accounts/bypasses", icon: <ShieldCheck size={18} />, roles: ["accountant"] },
+  { label: "Student Fees", href: "/accounts/student-fees", icon: <CreditCard size={18} />, roles: ["accountant", "admin"] },
+  { label: "Fee Structures", href: "/accounts/fees", icon: <Layers size={18} />, roles: ["accountant", "admin"] },
+  { label: "Collections", href: "/accounts/collections", icon: <FileText size={18} />, roles: ["accountant", "admin"] },
+  { label: "Hall Ticket Bypasses", href: "/accounts/bypasses", icon: <ShieldCheck size={18} />, roles: ["accountant", "admin"] },
   { label: "Pending Students", href: "/hod/pending", icon: <GraduationCap size={18} />, roles: ["hod"] },
   { label: "Class Management", href: "/hod/classes", icon: <School size={18} />, roles: ["hod"] },
   { label: "Timetable", href: "/hod/timetable", icon: <Calendar size={18} />, roles: ["hod"] },
   { label: "Exam Scheduling", href: "/hod/exam-scheduling", icon: <CalendarDays size={18} />, roles: ["hod"] },
   { label: "School Calendar", href: "/hod/calendar", icon: <CalendarDays size={18} />, roles: ["hod"] },
   { label: "Notices", href: "/hod/notices", icon: <Bell size={18} />, roles: ["hod"] },
+  { label: "My Signature", href: "/my-signature", icon: <FileSignature size={18} />, roles: ["hod", "class_teacher"] },
   { label: "School Calendar", href: "/teacher/calendar", icon: <CalendarDays size={18} />, roles: ["teacher"] },
   { label: "Marks Entry", href: "/teacher/marks", icon: <FileSpreadsheet size={18} />, roles: ["teacher"] },
   { label: "RFID Attendance", href: "/teacher/rfid-attendance", icon: <Wifi size={18} />, roles: ["teacher"], requiresClassTeacher: true },
@@ -83,6 +91,7 @@ const navItems: NavItem[] = [
   { label: "Attendance Register", href: "/teacher/attendance-register", icon: <CalendarCheck2 size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Assignments & Activities", href: "/teacher/assignments", icon: <FileText size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "School Calendar", href: "/student/calendar", icon: <CalendarDays size={18} />, roles: ["student"] },
+  { label: "Library", href: "/student/library", icon: <BookOpen size={18} />, roles: ["student"] },
   { label: "Hall Tickets", href: "/student/hall-tickets", icon: <FileText size={18} />, roles: ["student"] },
   { label: "Report Card", href: "/student/report-card", icon: <Award size={18} />, roles: ["student"] },
   { label: "Exam Timetable", href: "/student/exams", icon: <CalendarDays size={18} />, roles: ["student"] },
@@ -238,29 +247,40 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const SidebarContent = () => (
     <div className="flex h-full flex-col bg-[linear-gradient(180deg,#0f274f_0%,#173f75_38%,#19516f_100%)] text-slate-100">
-        <div className="flex items-center gap-3 border-b border-white/15 px-6 py-5">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/95 shadow-[0_10px_24px_-12px_rgba(14,165,233,0.95)] ring-1 ring-white/35 overflow-hidden p-1">
-            <img src="/prestige_logo.png" alt="Prestige International School" className="h-full w-full object-contain" />
+        <div className="flex items-center gap-3 border-b border-white/15 px-5 py-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white shadow-xs overflow-hidden p-0.5">
+            <img
+              src="/prestige_logo.png"
+              alt="Prestige International School"
+              className="h-full w-full object-contain"
+            />
           </div>
-          <div>
-            <p className="brand-font text-[15px] font-semibold leading-tight tracking-[0.04em]">Prestige International</p>
-            <p className="brand-font text-[11px] text-slate-200 tracking-[0.18em] uppercase">School</p>
+          <div className="min-w-0 flex flex-col justify-center">
+            <span className="font-bold text-[12px] uppercase leading-tight tracking-[0.06em] text-white">Prestige</span>
+            <span className="font-semibold text-[10.5px] uppercase leading-tight tracking-[0.05em] text-slate-100">International</span>
+            <span className="font-medium text-[9px] uppercase leading-tight tracking-[0.14em] text-cyan-200">School</span>
           </div>
         </div>
 
       <div className="border-b border-white/15 px-4 py-3">
         <div className="flex items-center justify-between gap-3 rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 backdrop-blur-sm">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/18 text-xs font-bold text-white">
+          <Link
+            href="/profile"
+            onClick={() => setMobileOpen(false)}
+            className="flex items-center gap-2.5 min-w-0 flex-1 rounded-lg p-1 -m-1 transition-all duration-150 hover:bg-white/15 active:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 cursor-pointer group"
+            title="View my profile"
+            data-testid="sidebar-profile-card"
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/18 text-xs font-bold text-white shrink-0 group-hover:scale-105 transition-transform">
               {appUser?.name?.charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="truncate text-sm font-semibold text-white">{appUser?.name}</p>
+              <p className="truncate text-sm font-semibold text-white group-hover:text-cyan-100 transition-colors">{appUser?.name}</p>
               <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${roleBadgeColor[appUser?.role ?? ""] ?? ""}`}>
                 {appUser?.role?.toUpperCase()}
               </span>
             </div>
-          </div>
+          </Link>
 
           <div className="relative shrink-0">
             <button

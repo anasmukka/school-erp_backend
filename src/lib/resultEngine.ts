@@ -154,6 +154,14 @@ export interface PublishedReportCardSnapshot {
     hod?: { name: string; signedAt: string; imageUrl?: string };
     principal?: { name: string; signedAt: string; imageUrl?: string };
   };
+  r2ObjectMetadata?: {
+    objectKey: string;
+    contentType: string;
+    generatedAt: string;
+    generatedBy: string;
+    version: number;
+    status: string;
+  };
 }
 
 // ==========================================

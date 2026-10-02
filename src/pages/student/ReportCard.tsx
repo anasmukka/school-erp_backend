@@ -233,17 +233,17 @@ export default function StudentReportCard() {
                 </div>
                 <div className="flex-1 px-3">
                   <h2 className="text-xl font-bold uppercase tracking-wide">
-                    {currentSnapshot.layoutConfig?.schoolName || "PRESTIGE INTERNATIONAL SCHOOL & PRE-UNIVERSITY COLLEGE"}
+                    {currentSnapshot.layoutConfig?.schoolName || "PRESTIGE INTERNATIONAL SCHOOL"}
                   </h2>
                   <p className="text-xs font-sans text-gray-700 italic">
-                    {currentSnapshot.layoutConfig?.tagline || "SCALING NEW HEIGHTS"}
+                    {currentSnapshot.layoutConfig?.tagline || "SCALING NEW HEIGHTS WITH EXCELLENCE"}
                   </p>
                   <p className="text-[11px] font-sans text-gray-600">
-                    {currentSnapshot.layoutConfig?.affiliationNo || "Affiliated to CBSE, New Delhi"}
+                    {currentSnapshot.layoutConfig?.affiliationNo || "Affiliated to CBSE, New Delhi — Senior Secondary Sector"}
                   </p>
                 </div>
-                <div className="w-14 h-14 border border-gray-300 rounded flex items-center justify-center text-[10px] font-sans font-bold text-gray-700 bg-gray-50">
-                  CBSE
+                <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                  <img src="/cbse_logo.png" alt="CBSE" className="h-full w-full object-contain" />
                 </div>
               </div>
               <div className="bg-black text-white text-xs font-sans font-bold py-1 tracking-wider uppercase mt-1">

@@ -1,0 +1,35 @@
+name = "school-erp-worker"
+main = "src/index.ts"
+compatibility_date = "2024-10-01"
+
+# Bindings for Cloudflare R2 Bucket
+[[r2_buckets]]
+binding = "STORAGE_BUCKET"
+bucket_name = "school-erp-storage"
+
+[vars]
+ENVIRONMENT = "production"
+SCHOOL_ID = "prestige"
+FIREBASE_PROJECT_ID = "schoolerpv2"
+# CORS: comma-separated list of allowed frontend origins. No wildcard (*) allowed.
+# Replace with your actual ERP domain before deploying to production.
+# Example: https://erp.prestigeschool.com,https://admin.prestigeschool.com
+WORKER_ALLOWED_ORIGINS = "https://erp.prestigeschool.com"
+
+# Note: Sensitive secrets MUST be set via `wrangler secret put <KEY>` — never commit them:
+# wrangler secret put RAZORPAY_KEY_SECRET
+# wrangler secret put RAZORPAY_WEBHOOK_SECRET
+# wrangler secret put FIREBASE_SERVICE_ACCOUNT_KEY  (if service-account auth is needed)
+
+[env.development]
+name = "school-erp-worker-dev"
+[[env.development.r2_buckets]]
+binding = "STORAGE_BUCKET"
+bucket_name = "school-erp-storage-dev"
+
+[env.development.vars]
+ENVIRONMENT = "development"
+SCHOOL_ID = "prestige-dev"
+FIREBASE_PROJECT_ID = "schoolerpv2"
+# For local dev, add localhost and Vite dev server origins
+WORKER_ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"

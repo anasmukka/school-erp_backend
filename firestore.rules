@@ -29,6 +29,25 @@ service cloud.firestore {
       return isSignedIn() && (getUserRole() in ['admin', 'hod', 'teacher', 'accountant']);
     }
 
+    // Prevents plaintext passwords, temporary passwords, or password hashes from ever being written to Firestore
+    function hasNoSensitiveAuthFields(data) {
+      return !(
+        'password' in data ||
+        'plainPassword' in data ||
+        'plaintextPassword' in data ||
+        'tempPassword' in data ||
+        'temporaryPassword' in data ||
+        'defaultPassword' in data ||
+        'loginPassword' in data ||
+        'admissionPassword' in data ||
+        'staffPassword' in data ||
+        'parentPassword' in data ||
+        'studentPassword' in data ||
+        'passwordHash' in data ||
+        'salt' in data
+      );
+    }
+
     // ==========================================
     // 1. PRINTING REQUESTS (ISOLATED WORKFLOW)
     // ==========================================
@@ -67,7 +86,13 @@ service cloud.firestore {
       allow read: if isSignedIn() && !isPrintingDept() && (
         isOperations() ||
         isStaff() ||
-        resource.data.memberId == request.auth.uid
+        resource.data.memberId == request.auth.uid ||
+        (getUserRole() == 'student' && (
+          resource.data.memberId == getUserData().studentUid ||
+          resource.data.memberId == getUserData().studentDocId ||
+          resource.data.memberId == getUserData().id
+        )) ||
+        (getUserRole() == 'parent' && resource.data.memberId in getUserData().linkedStudentUids)
       );
       allow write: if isOperations();
     }
@@ -116,7 +141,7 @@ service cloud.firestore {
     // ==========================================
     match /auditLogs/{logId} {
       allow read: if isAdmin();
-      allow create: if isSignedIn();
+      allow create: if isSignedIn() && hasNoSensitiveAuthFields(request.resource.data);
       allow update, delete: if false; // Immutable audit trail
     }
 
@@ -125,27 +150,81 @@ service cloud.firestore {
     // ==========================================
     match /users/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isStaff());
-      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow create: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data);
+      allow update: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data) && (
+        // Prevent mutating immutable authUid link
+        !('authUid' in request.resource.data) ||
+        !('authUid' in resource.data) ||
+        request.resource.data.authUid == resource.data.authUid
+      );
+      allow delete: if isAdmin();
     }
 
     match /students/{studentId} {
       // Operations needs read access to search student names for library circulation and uniform issues
       allow read: if isSignedIn() && !isPrintingDept();
-      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+      allow create: if (isAdmin() || (isSignedIn() && getUserRole() == 'hod')) && hasNoSensitiveAuthFields(request.resource.data);
+      allow update: if (isAdmin() || (isSignedIn() && getUserRole() == 'hod')) && hasNoSensitiveAuthFields(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /teachers/{teacherId} {
       allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /admissions/{admissionId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /enrollments/{enrollmentId} {
       allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
       allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /masterFeeHeads/{headId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+    }
+
+    match /studentFeeAssignments/{assignmentId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
+        isAdmin() || 
+        getUserRole() == 'accountant' ||
+        (getUserRole() == 'student' && (
+          resource.data.studentId == request.auth.uid ||
+          resource.data.studentUid == request.auth.uid ||
+          resource.data.authUid == request.auth.uid
+        )) ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentId in getUserData().linkedStudentUids ||
+          resource.data.studentUid in getUserData().linkedStudentUids ||
+          resource.data.authUid in getUserData().linkedStudentUids
+        ))
+      );
+      allow create: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+      allow update: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+      allow delete: if isAdmin();
+    }
+
+    match /feeLedgerEntries/{entryId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
+        isAdmin() || 
+        getUserRole() == 'accountant' ||
+        resource.data.studentId == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid ||
+        resource.data.authUid == request.auth.uid ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentId in getUserData().linkedStudentUids ||
+          resource.data.studentUid in getUserData().linkedStudentUids ||
+          resource.data.authUid in getUserData().linkedStudentUids
+        ))
+      );
+      allow create: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+      allow update, delete: if false;
     }
 
     match /feePayments/{paymentId} {
@@ -154,19 +233,31 @@ service cloud.firestore {
         getUserRole() == 'accountant' ||
         resource.data.studentId == request.auth.uid ||
         resource.data.studentUid == request.auth.uid ||
-        (getUserRole() == 'parent' && resource.data.studentId in getUserData().linkedStudentUids)
+        resource.data.authUid == request.auth.uid ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentId in getUserData().linkedStudentUids ||
+          resource.data.studentUid in getUserData().linkedStudentUids ||
+          resource.data.authUid in getUserData().linkedStudentUids
+        ))
       );
-      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant') ||
-        (isSignedIn() && getUserRole() == 'student' && request.resource.data.paymentMode == 'online' && (
-          request.resource.data.studentId == request.auth.uid ||
-          request.resource.data.studentUid == request.auth.uid ||
-          request.resource.data.recordedBy == request.auth.uid
-        ));
+      allow create: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+      allow update: if isAdmin();
+      allow delete: if false;
     }
 
     match /feeStructures/{feeId} {
+      function isValidAcademicSession(data) {
+        return !('academicSessionId' in data) ||
+          (data.academicSessionId is string &&
+           data.academicSessionId.size() > 0 &&
+           data.academicSessionId.size() <= 100 &&
+           exists(/databases/$(database)/documents/academicSessions/$(data.academicSessionId)));
+      }
+
       allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
-      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
+      allow create, update: if (isAdmin() || (isSignedIn() && getUserRole() == 'accountant')) &&
+        isValidAcademicSession(request.resource.data);
+      allow delete: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');
     }
 
     match /academicSessions/{sessionId} {
@@ -199,9 +290,28 @@ service cloud.firestore {
       allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
     }
 
+    // ==========================================
+    // E-SIGNATURES & DOCUMENT SIGNATORIES
+    // ==========================================
     match /signatures/{sigId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == sigId);
+      // AUTHORIZED SIGNATORIES: Admin (Principal), HOD, Class Teacher ONLY.
+      // Subject teachers, students, parents, accounts, printing, and operations
+      // must never read or write signature records.
+      allow read: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'class_teacher']);
+      // Admin can manage any signature record.
+      // HOD and class_teacher can only write their own signature document (sigId == their Auth UID).
+      allow create, update: if isAdmin() ||
+        (isSignedIn() && getUserRole() == 'hod' && request.auth.uid == sigId) ||
+        (isSignedIn() && getUserRole() == 'class_teacher' && request.auth.uid == sigId);
+      // Delete is reserved for Admin only.
+      allow delete: if isAdmin();
+    }
+
+    match /signatureConfigs/{configId} {
+      // Configuration is readable by admin, hod, and class_teacher for document generation.
+      allow read: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'class_teacher']);
+      // Only Admin can configure document signatory slots.
+      allow write: if isAdmin();
     }
 
     // ==========================================
@@ -222,7 +332,13 @@ service cloud.firestore {
         isAdmin() ||
         getUserRole() in ['hod', 'teacher']
       );
-      allow create, update: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher']);
+      // Teachers and HODs can create and update marks only if the record is not locked.
+      // Admin retains override unlock capability.
+      allow create: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher']);
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (getUserRole() in ['hod', 'teacher'] && resource.data.workflowStatus != 'locked')
+      );
       allow delete: if isAdmin();
     }
 
@@ -299,7 +415,19 @@ service cloud.firestore {
         )) ||
         (getUserRole() == 'parent' && resource.data.studentId in getUserData().linkedStudentUids)
       );
-      allow create: if isSignedIn() && (isAdmin() || getUserRole() == 'accountant');
+      allow create: if isSignedIn() && (
+        isAdmin() ||
+        getUserRole() == 'accountant' ||
+        (
+          getUserRole() == 'student' &&
+          request.resource.data.status == 'pending' &&
+          request.resource.data.requestedBy.uid == request.auth.uid &&
+          (
+            request.resource.data.studentUid == request.auth.uid ||
+            request.resource.data.studentId == request.auth.uid
+          )
+        )
+      );
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
@@ -326,21 +454,42 @@ service cloud.firestore {
         isAdmin() ||
         getUserRole() == 'accountant' ||
         resource.data.studentId == request.auth.uid ||
-        resource.data.studentUid == request.auth.uid
+        resource.data.studentUid == request.auth.uid ||
+        resource.data.createdBy == request.auth.uid
       );
-      allow create: if isSignedIn() && (
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ==========================================
+    // 9. PROFILE CHANGE REQUESTS (IDOR PROTECTED)
+    // ==========================================
+    match /profileChangeRequests/{requestId} {
+      // User can read own change requests; Admin can read all
+      allow read: if isSignedIn() && (
         isAdmin() ||
-        getUserRole() == 'accountant' ||
-        request.resource.data.studentId == request.auth.uid ||
-        request.resource.data.studentUid == request.auth.uid
+        resource.data.userId == request.auth.uid
       );
+
+      // User can only create requests for themselves (IDOR protected)
+      allow create: if isSignedIn() && (
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.status == 'pending'
+      );
+
+      // User can cancel their own pending request; Admin can approve/reject
       allow update: if isSignedIn() && (
         isAdmin() ||
-        getUserRole() == 'accountant' ||
-        resource.data.studentId == request.auth.uid ||
-        resource.data.studentUid == request.auth.uid
+        (
+          resource.data.userId == request.auth.uid &&
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'cancelled' &&
+          request.resource.data.userId == resource.data.userId
+        )
       );
-      allow delete: if isAdmin();
+
+      allow delete: if false; // Immutable audit trail
     }
   }
 }

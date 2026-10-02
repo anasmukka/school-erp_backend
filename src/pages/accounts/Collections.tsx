@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, getDocs, query, where } from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import { FeePayment, FeePaymentMode, FeeStructure, Student } from "@/lib/types";
@@ -26,6 +26,10 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { BookOpen, CalendarDays, CreditCard, Users } from "lucide-react";
+import { FeeReceiptModal } from "@/components/FeeReceiptModal";
+import { resolveFeeReceiptData, FeeReceiptData } from "@/lib/generateFeeReceiptPdf";
+import { usePaymentCapability } from "@/lib/payments";
+import { OnlinePaymentStatusBadge } from "@/components/OnlinePaymentStatus";
 
 interface PaymentFormState {
   installmentId: string;
@@ -60,6 +64,7 @@ function statusBadgeClass(status: "paid" | "partial" | "pending" | "overdue") {
 
 export default function Collections() {
   const { appUser } = useAuth();
+  const paymentCap = usePaymentCapability();
   const currentSession = useMemo(() => getAcademicSession(), []);
 
   const [structures, setStructures] = useState<FeeStructure[]>([]);
@@ -75,7 +80,14 @@ export default function Collections() {
   const [paymentError, setPaymentError] = useState("");
   const [recordingPayment, setRecordingPayment] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
-  const [receiptPayment, setReceiptPayment] = useState<FeePayment | null>(null);
+  const [receiptData, setReceiptData] = useState<FeeReceiptData | null>(null);
+
+  const openReceiptForPayment = async (payment: FeePayment) => {
+    const student = collectionStudents.find((s) => s.id === payment.studentId) || null;
+    const resolved = await resolveFeeReceiptData(payment, student, collectionStructure);
+    setReceiptData(resolved);
+    setReceiptOpen(true);
+  };
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>({
     installmentId: "",
     amount: "",
@@ -243,14 +255,31 @@ export default function Collections() {
 
     try {
       const receiptNo = `RC-${Date.now()}`;
-      const paymentData = {
+
+      // Check if student has an active fee assignment
+      let assignmentId: string | null = null;
+      try {
+        const { getStudentFeeAssignment } = await import("@/lib/feeAssignments");
+        const assignment = await getStudentFeeAssignment(paymentStudent.id, collectionStructure.academicSession);
+        if (assignment && assignment.id) {
+          assignmentId = assignment.id;
+        }
+      } catch (e) {
+        /* non-blocking assignment lookup */
+      }
+
+      const paymentData: Record<string, any> = {
         academicSession: collectionStructure.academicSession,
         grade: collectionStructure.grade,
         structureId: collectionStructure.id,
         studentId: paymentStudent.id,
+        studentUid: paymentStudent.uid || (paymentStudent as any).studentUid || paymentStudent.id,
+        authUid: paymentStudent.uid || (paymentStudent as any).authUid || paymentStudent.id,
         studentName: paymentStudent.name,
         installmentId: paymentForm.installmentId,
         installmentLabel: installmentMeta?.label ?? selectedLedgerRow.label,
+        termId: installmentMeta?.termId || selectedLedgerRow.termId || undefined,
+        termName: installmentMeta?.termName || selectedLedgerRow.termName || undefined,
         amount,
         paymentMode: paymentForm.paymentMode,
         reference: paymentForm.reference.trim(),
@@ -258,29 +287,34 @@ export default function Collections() {
         paidAt: paymentForm.paidAt,
         recordedBy: appUser?.id ?? "",
         receiptNo,
+        verificationStatus: "verified",
+        verifiedAt: new Date().toISOString(),
       };
 
-      const docRef = await addDoc(collection(db, "feePayments"), paymentData);
+      if (assignmentId) {
+        paymentData.assignmentId = assignmentId;
+      }
 
-      // Log audit
-      import("@/lib/audit").then((m) =>
-        m.logAuditEvent({
-          userId: appUser?.id || "accounts",
-          userName: appUser?.name || "Accounts User",
+      const { recordAtomicCounterPayment } = await import("@/lib/feeLedger");
+      const { paymentId: newPaymentId, receiptNo: confirmedReceiptNo } = await recordAtomicCounterPayment(
+        paymentData,
+        {
+          uid: appUser?.id || "accounts",
+          name: appUser?.name || "Accounts User",
           role: (appUser?.role as any) || "accountant",
-          action: "create",
-          entity: "printing",
-          entityId: docRef.id,
-          details: `Manual Fee Payment: ₹${amount} received from ${paymentStudent.name} (${paymentData.installmentLabel}) via ${paymentForm.paymentMode} - Receipt: ${receiptNo}`,
-          metadata: { receiptNo, amount, studentId: paymentStudent.id, installmentId: paymentForm.installmentId },
-        })
-      ).catch(() => {});
+        }
+      );
 
-      setReceiptPayment({ id: docRef.id, ...paymentData });
+      const resolvedReceipt = await resolveFeeReceiptData(
+        { id: newPaymentId, receiptNo: confirmedReceiptNo, ...paymentData },
+        paymentStudent,
+        collectionStructure
+      );
+      setReceiptData(resolvedReceipt);
       setReceiptOpen(true);
       setPaymentOpen(false);
       setPaymentStudent(null);
-      setPageMessage(`Payment of Rs ${amount} recorded for ${paymentStudent.name}. Receipt generated: ${receiptNo}`);
+      setPageMessage(`Payment of Rs ${amount} recorded for ${paymentStudent.name}. Receipt generated: ${confirmedReceiptNo}`);
       await loadCollections(collectionStructure);
     } catch (error) {
       console.error(error);
@@ -294,8 +328,14 @@ export default function Collections() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Fee Collections</h1>
-          <p className="text-sm text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="text-2xl font-bold">Fee Collections</h1>
+            <OnlinePaymentStatusBadge
+              status={paymentCap.capability?.status}
+              provider={paymentCap.capability?.provider}
+            />
+          </div>
+          <p className="text-sm text-muted-foreground mt-0.5">
             Post installment payments, see outstanding dues, and print receipts.
           </p>
         </div>
@@ -542,7 +582,7 @@ export default function Collections() {
                             <TableCell className="text-right font-medium">{formatCurrency(payment.amount)}</TableCell>
                             <TableCell className="text-right">
                               {payment.receiptNo ? (
-                                <Button size="sm" variant="outline" onClick={() => { setReceiptPayment(payment); setReceiptOpen(true); }}>
+                                <Button size="sm" variant="outline" onClick={() => openReceiptForPayment(payment)}>
                                   View Receipt
                                 </Button>
                               ) : null}
@@ -612,7 +652,7 @@ export default function Collections() {
                   >
                     {selectedStudentLedger.map((row) => (
                       <option key={row.id} value={row.id}>
-                        {row.label} - {formatCurrency(row.balance)} balance
+                        {row.termName ? `${row.termName} — ` : ""}{row.label} - {formatCurrency(row.balance)} balance
                       </option>
                     ))}
                   </select>
@@ -715,49 +755,11 @@ export default function Collections() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={receiptOpen} onOpenChange={setReceiptOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Payment Receipt</DialogTitle>
-          </DialogHeader>
-          {receiptPayment ? (
-            <div className="space-y-2 text-sm">
-              <div className="rounded-lg border border-border p-3">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Receipt No</span>
-                  <span className="font-semibold">{receiptPayment.receiptNo}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Student</span>
-                  <span className="font-semibold">{receiptPayment.studentName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Installment</span>
-                  <span className="font-semibold">{receiptPayment.installmentLabel}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Date</span>
-                  <span className="font-semibold">{receiptPayment.paidAt}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Mode</span>
-                  <span className="font-semibold capitalize">{receiptPayment.paymentMode}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Amount</span>
-                  <span className="font-semibold">{formatCurrency(receiptPayment.amount)}</span>
-                </div>
-              </div>
-              <DialogFooter className="justify-between">
-                <Button variant="outline" onClick={() => setReceiptOpen(false)}>
-                  Close
-                </Button>
-                <Button onClick={() => window.print()}>Print</Button>
-              </DialogFooter>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      <FeeReceiptModal
+        open={receiptOpen}
+        onOpenChange={setReceiptOpen}
+        data={receiptData}
+      />
     </div>
   );
 }

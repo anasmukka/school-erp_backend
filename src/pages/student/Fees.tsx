@@ -3,7 +3,8 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import { getAcademicSession, getFeeCollectionSummary, sumFeeHeads } from "@/lib/fees";
-import { FeePayment, FeeStructure, Student } from "@/lib/types";
+import { FeePayment, FeeStructure, Student, StudentFeeAssignment } from "@/lib/types";
+import { getStudentFeeAssignment } from "@/lib/feeAssignments";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -14,7 +15,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { CalendarDays, CreditCard, FileText, GraduationCap, Loader2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, CreditCard, FileText, GraduationCap, Loader2, Receipt } from "lucide-react";
+import { FeeReceiptModal } from "@/components/FeeReceiptModal";
+import { resolveFeeReceiptData, FeeReceiptData } from "@/lib/generateFeeReceiptPdf";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +28,12 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { createFeePaymentOrder } from "@/lib/payments";
+import { createFeePaymentOrder, usePaymentCapability } from "@/lib/payments";
+import {
+  OnlinePaymentComingSoonCard,
+  OnlinePaymentUnavailableCard,
+  OnlinePaymentStatusBadge,
+} from "@/components/OnlinePaymentStatus";
 
 function formatCurrency(value: number) {
   return `Rs ${Math.round(value).toLocaleString("en-IN")}`;
@@ -46,10 +54,12 @@ function ledgerTone(status: "paid" | "partial" | "pending" | "overdue") {
 
 export default function StudentFees() {
   const { appUser } = useAuth();
+  const paymentCap = usePaymentCapability();
   const currentSession = useMemo(() => getAcademicSession(), []);
 
   const [student, setStudent] = useState<Student | null>(null);
   const [structure, setStructure] = useState<FeeStructure | null>(null);
+  const [assignment, setAssignment] = useState<StudentFeeAssignment | null>(null);
   const [payments, setPayments] = useState<FeePayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -83,6 +93,7 @@ export default function StudentFees() {
           setError("No student profile is linked to this login yet.");
           setStudent(null);
           setStructure(null);
+          setAssignment(null);
           setPayments([]);
           return;
         }
@@ -90,24 +101,60 @@ export default function StudentFees() {
         const studentRecord = { id: studentSnapshot.docs[0].id, ...studentSnapshot.docs[0].data() } as Student;
         setStudent(studentRecord);
 
-        const structuresSnapshot = await getDocs(collection(db, "feeStructures"));
-        const matchedStructure =
-          structuresSnapshot.docs
-            .map((record) => ({ id: record.id, ...record.data() } as FeeStructure))
-            .filter(
-              (item) =>
-                item.grade === studentRecord.grade &&
-                item.academicSession === currentSession,
-            )
-            .sort((a, b) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? ""))[0] ?? null;
+        // 1. Check for individualized Student Fee Assignment first
+        const studentAssignment = await getStudentFeeAssignment(
+          studentRecord.id,
+          currentSession,
+          studentRecord.uid || appUser?.id
+        );
+        setAssignment(studentAssignment);
 
-        setStructure(matchedStructure);
+        let activeStructure: FeeStructure | null = null;
+        if (studentAssignment && studentAssignment.structureSnapshot) {
+          // Construct effective structure from snapshot
+          activeStructure = {
+            id: studentAssignment.structureId,
+            academicSession: studentAssignment.sessionId,
+            grade: studentAssignment.grade,
+            title: studentAssignment.structureSnapshot.title,
+            term: (studentAssignment.structureSnapshot.term as any) || "full_year",
+            feeHeads: studentAssignment.lineItems?.map((li) => ({
+              id: li.feeHeadId,
+              name: li.feeHeadName,
+              amount: li.amount,
+            })) || studentAssignment.structureSnapshot.feeHeads,
+            installments: studentAssignment.installments?.map((inst) => ({
+              id: inst.id,
+              label: inst.label,
+              amount: inst.amount,
+              dueDate: inst.dueDate,
+            })) || studentAssignment.structureSnapshot.installments,
+            notes: studentAssignment.notes,
+            createdAt: studentAssignment.createdAt,
+            createdBy: studentAssignment.assignedBy,
+          };
+        } else {
+          // Fall back to class-level structure template
+          const structuresSnapshot = await getDocs(collection(db, "feeStructures"));
+          activeStructure =
+            structuresSnapshot.docs
+              .map((record) => ({ id: record.id, ...record.data() } as FeeStructure))
+              .filter(
+                (item) =>
+                  item.grade === studentRecord.grade &&
+                  item.academicSession === currentSession,
+              )
+              .sort((a, b) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? ""))[0] ?? null;
+        }
 
-        if (!matchedStructure) {
+        setStructure(activeStructure);
+
+        if (!activeStructure) {
           setPayments([]);
           return;
         }
 
+        // Fetch payments for this student
         const paymentsSnapshot = await getDocs(
           query(collection(db, "feePayments"), where("studentId", "==", studentRecord.id)),
         );
@@ -115,7 +162,10 @@ export default function StudentFees() {
         setPayments(
           paymentsSnapshot.docs
             .map((record) => ({ id: record.id, ...record.data() } as FeePayment))
-            .filter((payment) => payment.structureId === matchedStructure.id)
+            .filter((payment) =>
+              payment.structureId === activeStructure!.id ||
+              (studentAssignment && (payment as any).assignmentId === studentAssignment.id)
+            )
             .sort((a, b) => (b.paidAt ?? "").localeCompare(a.paidAt ?? "")),
         );
       } catch (loadError) {
@@ -168,9 +218,36 @@ export default function StudentFees() {
   const [selectedPaymentMode, setSelectedPaymentMode] = useState<"upi" | "online" | "card">("upi");
   const [gatewayStep, setGatewayStep] = useState<"select" | "checkout" | "success">("select");
   const [confirmedReceipt, setConfirmedReceipt] = useState<any>(null);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receiptData, setReceiptData] = useState<FeeReceiptData | null>(null);
+
+  const openReceiptForPayment = async (payment: FeePayment) => {
+    // IDOR Security Protection: ensure students / parents only access their own receipts
+    const isOwner =
+      payment.studentId === student?.id ||
+      payment.studentUid === student?.uid ||
+      payment.studentUid === appUser?.id ||
+      (payment as any).authUid === appUser?.id;
+
+    if (!isOwner && appUser?.role !== "admin" && appUser?.role !== "accountant") {
+      setPayError("Access denied: You are only authorized to view your own receipts.");
+      return;
+    }
+
+    const resolved = await resolveFeeReceiptData(payment, student, structure, assignment);
+    setReceiptData(resolved);
+    setReceiptOpen(true);
+  };
 
   const startPayment = async () => {
     if (!student || !structure || !summary) return;
+    if (!paymentCap.isOnlinePaymentActive) {
+      setPayError(
+        paymentCap.capability?.message ||
+          "Online fee payments are currently unavailable. Please use the school counter for payment."
+      );
+      return;
+    }
     if (paySelection.size === 0) {
       setPayError("Select at least one installment to pay.");
       return;
@@ -182,12 +259,16 @@ export default function StudentFees() {
       const selectedRows = summary.ledger.filter((row) => paySelection.has(row.id));
       const installmentIds = selectedRows.map((row) => row.id);
       const installmentLabels = selectedRows.map((row) => row.label);
+      const firstRow = selectedRows[0];
       const order = await createFeePaymentOrder({
         studentId: student.id,
         studentName: student.name,
         grade: student.grade,
         structureId: structure.id,
+        assignmentId: assignment?.id,
         academicSession: currentSession,
+        termId: firstRow?.termId,
+        termName: firstRow?.termName,
         installmentIds,
         installmentLabels,
         amount: selectedTotal,
@@ -209,25 +290,27 @@ export default function StudentFees() {
     try {
       const selectedRows = summary.ledger.filter((row) => paySelection.has(row.id));
       const targetRow = selectedRows[0];
-      const result = await import("@/lib/payments").then((m) =>
-        m.verifyAndRecordOnlineFeePayment(
-          {
-            orderId: activeOrder.orderId,
-            paymentId: `PAY_GATEWAY_${Date.now()}`,
-            signatureToken: activeOrder.signatureToken,
-            studentId: student.id,
-            studentName: student.name,
-            grade: student.grade,
-            structureId: structure.id,
-            academicSession: currentSession,
-            installmentId: targetRow.id,
-            installmentLabel: targetRow.label,
-            amount: selectedTotal,
-            paymentMode: "online",
-            payerEmail: appUser?.email,
-          },
-          { id: appUser?.id || "student", name: appUser?.name, role: appUser?.role }
-        )
+      const { verifyAndRecordOnlineFeePayment } = await import("@/lib/payments");
+      const result = await verifyAndRecordOnlineFeePayment(
+        {
+          orderId: activeOrder.orderId,
+          paymentId: activeOrder.paymentId || `pay_order_${activeOrder.orderId.slice(-8)}`,
+          razorpaySignature: activeOrder.razorpaySignature || "",
+          studentId: student.id,
+          studentName: student.name,
+          grade: student.grade || "",
+          structureId: structure.id,
+          assignmentId: assignment?.id,
+          academicSession: currentSession,
+          termId: targetRow.termId,
+          termName: targetRow.termName,
+          installmentId: targetRow.id,
+          installmentLabel: targetRow.label,
+          amount: selectedTotal,
+          paymentMode: "online",
+          payerEmail: appUser?.email,
+        },
+        { id: appUser?.id || "student", name: appUser?.name, role: appUser?.role }
       );
 
       if (result.success) {
@@ -243,12 +326,27 @@ export default function StudentFees() {
         const paymentsSnapshot = await getDocs(
           query(collection(db, "feePayments"), where("studentId", "==", student.id))
         );
-        setPayments(
-          paymentsSnapshot.docs
-            .map((record) => ({ id: record.id, ...record.data() } as FeePayment))
-            .filter((payment) => payment.structureId === structure.id)
-            .sort((a, b) => (b.paidAt ?? "").localeCompare(a.paidAt ?? ""))
-        );
+        const reloaded = paymentsSnapshot.docs
+          .map((record) => ({ id: record.id, ...record.data() } as FeePayment))
+          .filter((payment) => payment.structureId === structure.id)
+          .sort((a, b) => (b.paidAt ?? "").localeCompare(a.paidAt ?? ""));
+        setPayments(reloaded);
+
+        const newPayment = reloaded.find((p) => p.receiptNo === result.receiptNo) || {
+          id: result.transactionId || result.receiptNo,
+          receiptNo: result.receiptNo,
+          paidAt: result.paidAt,
+          amount: selectedTotal,
+          paymentMode: "online",
+          installmentLabel: selectedRows.map((r) => r.label).join(", "),
+          termName: targetRow.termName,
+          reference: result.transactionId,
+          studentId: student.id,
+          studentName: student.name,
+          academicSession: currentSession,
+        };
+        const resolved = await resolveFeeReceiptData(newPayment, student, structure, assignment);
+        setReceiptData(resolved);
       }
     } catch (err: any) {
       setPayError(err?.message || "Payment verification failed. Please try again.");
@@ -322,6 +420,13 @@ export default function StudentFees() {
                 <Badge>{structure.academicSession}</Badge>
                 <Badge variant="outline">Grade {student.grade}</Badge>
                 {student.admissionNo ? <Badge variant="outline">Adm {student.admissionNo}</Badge> : null}
+                {assignment ? (
+                  <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-none">
+                    Assigned Plan (v{assignment.version})
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary">Standard Class Plan</Badge>
+                )}
               </div>
               <h2 className="text-xl font-semibold">{student.name}</h2>
               <p className="text-sm text-muted-foreground">{structure.title}</p>
@@ -330,8 +435,8 @@ export default function StudentFees() {
             <div className="grid grid-cols-2 gap-3 lg:min-w-[320px]">
               <MiniStat
                 icon={<CreditCard size={16} className="text-blue-600" />}
-                label="Total Fees"
-                value={formatCurrency(sumFeeHeads(structure))}
+                label={assignment ? "Net Assigned" : "Total Fees"}
+                value={formatCurrency(assignment ? assignment.netAmount : sumFeeHeads(structure))}
               />
               <MiniStat
                 icon={<FileText size={16} className="text-emerald-600" />}
@@ -351,10 +456,24 @@ export default function StudentFees() {
             </div>
 
             {pendingInstallments.length > 0 ? (
-              <Button onClick={() => setPayOpen(true)} className="self-start">
-                <CreditCard size={16} />
-                Pay Online
-              </Button>
+              paymentCap.loading ? (
+                <Button disabled variant="outline" className="self-start opacity-70">
+                  <Loader2 size={16} className="animate-spin mr-1.5" />
+                  Checking payment options...
+                </Button>
+              ) : paymentCap.isOnlinePaymentActive ? (
+                <Button onClick={() => setPayOpen(true)} className="self-start">
+                  <CreditCard size={16} />
+                  Pay Online
+                </Button>
+              ) : paymentCap.isComingSoon ? (
+                <OnlinePaymentComingSoonCard className="self-start max-w-sm w-full" />
+              ) : paymentCap.isTemporarilyUnavailable ? (
+                <OnlinePaymentUnavailableCard
+                  message={paymentCap.capability?.message}
+                  className="self-start max-w-sm w-full"
+                />
+              ) : null
             ) : null}
           </div>
 
@@ -417,40 +536,97 @@ export default function StudentFees() {
         <Card>
           <CardContent className="pt-6">
             <div className="mb-4">
-              <h2 className="text-lg font-semibold">Installment Schedule</h2>
+              <h2 className="text-lg font-semibold">Installment Schedule by Term</h2>
               <p className="text-sm text-muted-foreground">
-                Due dates, balances, and collection status for each installment.
+                Due dates, balances, and collection status organized under academic terms.
               </p>
             </div>
 
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Installment</TableHead>
-                  <TableHead>Due Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead className="text-right">Paid</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {summary.ledger.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="font-medium">{row.label}</TableCell>
-                    <TableCell>{row.dueDate}</TableCell>
-                    <TableCell>
-                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${ledgerTone(row.status)}`}>
-                        {row.status}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">{formatCurrency(row.amount)}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(row.paid)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatCurrency(row.balance)}</TableCell>
-                  </TableRow>
+            {summary.termSummaries && summary.termSummaries.length > 0 ? (
+              <div className="space-y-4">
+                {summary.termSummaries.map((term) => (
+                  <div key={term.termId} className="rounded-xl border border-border overflow-hidden">
+                    <div className="bg-muted/40 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 border-b border-border text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-foreground text-sm">{term.termName}</span>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ledgerTone(term.status)}`}>
+                          {term.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-muted-foreground">
+                          Scheduled: <strong className="text-foreground">{formatCurrency(term.totalScheduled)}</strong>
+                        </span>
+                        <span className="text-muted-foreground">
+                          Paid: <strong className="text-emerald-600">{formatCurrency(term.totalPaid)}</strong>
+                        </span>
+                        <span className="text-muted-foreground">
+                          Balance: <strong className={term.totalBalance > 0 ? "text-rose-600" : "text-muted-foreground"}>{formatCurrency(term.totalBalance)}</strong>
+                        </span>
+                      </div>
+                    </div>
+
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Installment</TableHead>
+                          <TableHead>Due Date</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right">Paid</TableHead>
+                          <TableHead className="text-right">Balance</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {term.installments.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell className="font-medium">{row.label}</TableCell>
+                            <TableCell>{row.dueDate}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${ledgerTone(row.status)}`}>
+                                {row.status}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">{formatCurrency(row.amount)}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(row.paid)}</TableCell>
+                            <TableCell className="text-right font-medium">{formatCurrency(row.balance)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Installment</TableHead>
+                    <TableHead>Due Date</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead className="text-right">Paid</TableHead>
+                    <TableHead className="text-right">Balance</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {summary.ledger.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell className="font-medium">{row.label}</TableCell>
+                      <TableCell>{row.dueDate}</TableCell>
+                      <TableCell>
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${ledgerTone(row.status)}`}>
+                          {row.status}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">{formatCurrency(row.amount)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(row.paid)}</TableCell>
+                      <TableCell className="text-right font-medium">{formatCurrency(row.balance)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -478,6 +654,7 @@ export default function StudentFees() {
                   <TableHead>Reference</TableHead>
                   <TableHead>Notes</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -489,6 +666,17 @@ export default function StudentFees() {
                     <TableCell>{payment.reference || "-"}</TableCell>
                     <TableCell>{payment.notes || "-"}</TableCell>
                     <TableCell className="text-right font-medium">{formatCurrency(payment.amount)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 text-xs"
+                        onClick={() => openReceiptForPayment(payment)}
+                      >
+                        <Receipt size={13} />
+                        Receipt
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -511,9 +699,32 @@ export default function StudentFees() {
         }}
       >
         <DialogContent className="max-w-lg">
-          {gatewayStep === "select" && (
-            <>
+          {!paymentCap.isOnlinePaymentActive ? (
+            <div className="space-y-4 py-2">
               <DialogHeader>
+                <DialogTitle>Online Payment Gateway</DialogTitle>
+                <DialogDescription>
+                  Current online fee payment availability and instructions.
+                </DialogDescription>
+              </DialogHeader>
+
+              {paymentCap.isComingSoon ? (
+                <OnlinePaymentComingSoonCard />
+              ) : (
+                <OnlinePaymentUnavailableCard message={paymentCap.capability?.message} />
+              )}
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setPayOpen(false)}>
+                  Close
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <>
+              {gatewayStep === "select" && (
+                <>
+                  <DialogHeader>
                 <DialogTitle>Select installments to pay</DialogTitle>
                 <DialogDescription>
                   Pending and partial installments for this session. The amount is confirmed by the server when you create the order.
@@ -533,7 +744,14 @@ export default function StudentFees() {
                         onCheckedChange={() => toggleSelection(row.id)}
                       />
                       <div className="flex-1">
-                        <p className="font-medium text-sm">{row.label}</p>
+                        <div className="flex items-center gap-1.5">
+                          {row.termName && (
+                            <Badge variant="outline" className="text-[10px] py-0 px-1 font-normal">
+                              {row.termName}
+                            </Badge>
+                          )}
+                          <p className="font-medium text-sm">{row.label}</p>
+                        </div>
                         <p className="text-xs text-muted-foreground">Due {row.dueDate}</p>
                       </div>
                       <div className="text-sm font-semibold">{formatCurrency(row.balance)}</div>
@@ -712,8 +930,13 @@ export default function StudentFees() {
               </div>
 
               <DialogFooter className="flex items-center justify-between sm:justify-between">
-                <Button variant="outline" onClick={() => window.print()}>
-                  Print Receipt
+                <Button
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => setReceiptOpen(true)}
+                >
+                  <Receipt size={14} />
+                  View & Download Official Receipt
                 </Button>
                 <Button onClick={() => setPayOpen(false)}>
                   Done
@@ -721,8 +944,16 @@ export default function StudentFees() {
               </DialogFooter>
             </>
           )}
-        </DialogContent>
+        </>
+      )}
+    </DialogContent>
       </Dialog>
+
+      <FeeReceiptModal
+        open={receiptOpen}
+        onOpenChange={setReceiptOpen}
+        data={receiptData}
+      />
     </div>
   );
 }

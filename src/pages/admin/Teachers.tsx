@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { collection, getDocs, query, where, deleteDoc, updateDoc, doc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Teacher, User } from "@/lib/types";
@@ -16,8 +17,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { User as UserIcon, CheckSquare, Square, Trash2, Loader2 } from "lucide-react";
+import { User as UserIcon, CheckSquare, Square, Trash2, Loader2, Plus, Users, Search, GraduationCap } from "lucide-react";
+import { SearchInput } from "@/components/ui/SearchInput";
+
+const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 
 export default function Teachers() {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -29,10 +34,15 @@ export default function Teachers() {
   const [deleteTarget, setDeleteTarget] = useState<Teacher | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingTeacher, setEditingTeacher] = useState<Teacher | null>(null);
+
+  // Search & Filters
+  const [searchQuery, setSearchQuery] = useState("");
+  const [hodFilter, setHodFilter] = useState("all");
+  const [gradeFilter, setGradeFilter] = useState("all");
+
   const [form, setForm] = useState({
     name: "",
     email: "",
-    password: "",
     DOB: "",
     photo: "",
     subject: "",
@@ -40,15 +50,20 @@ export default function Teachers() {
   });
 
   const load = async () => {
-    const [tSnap, hodSnap] = await Promise.all([
-      getDocs(collection(db, "teachers")),
-      getDocs(query(collection(db, "users"), where("role", "==", "hod"))),
-    ]);
-    setTeachers(tSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Teacher)));
-    setHods(hodSnap.docs.map((d) => ({ id: d.id, ...d.data() } as User)));
+    setLoading(true);
+    try {
+      const [tSnap, hodSnap] = await Promise.all([
+        getDocs(collection(db, "teachers")),
+        getDocs(query(collection(db, "users"), where("role", "==", "hod"))),
+      ]);
+      setTeachers(tSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Teacher)));
+      setHods(hodSnap.docs.map((d) => ({ id: d.id, ...d.data() } as User)));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); }, []);
 
   const toggleHod = (hodId: string) => {
     setForm((f) => ({
@@ -65,7 +80,7 @@ export default function Teachers() {
   };
 
   const resetForm = () => {
-    setForm({ name: "", email: "", password: "", DOB: "", photo: "", subject: "", selectedHodIds: [] });
+    setForm({ name: "", email: "", DOB: "", photo: "", subject: "", selectedHodIds: [] });
     setError("");
   };
 
@@ -73,7 +88,6 @@ export default function Teachers() {
     setForm({
       name: teacher.name || "",
       email: teacher.email || "",
-      password: "",
       DOB: teacher.DOB || "",
       photo: teacher.photo || "",
       subject: teacher.subject || "",
@@ -134,19 +148,52 @@ export default function Teachers() {
     return Array.from(grades).sort((a, b) => Number(a) - Number(b));
   };
 
+  // Filter teachers by search, HOD, and grade
+  const filteredTeachers = useMemo(() => {
+    return teachers.filter((t) => {
+      // HOD filter
+      if (hodFilter !== "all") {
+        if (hodFilter === "unassigned") {
+          if (t.hodIds && t.hodIds.length > 0) return false;
+        } else {
+          if (!t.hodIds || !t.hodIds.includes(hodFilter)) return false;
+        }
+      }
+
+      // Grade filter
+      if (gradeFilter !== "all") {
+        const grades = getTeacherGrades(t);
+        if (!grades.includes(gradeFilter)) return false;
+      }
+
+      // Search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchName = (t.name || "").toLowerCase().includes(q);
+        const matchEmail = (t.email || "").toLowerCase().includes(q);
+        const matchSubject = (t.subject || "").toLowerCase().includes(q);
+        const matchId = (t.id || "").toLowerCase().includes(q) || (t.uid || "").toLowerCase().includes(q);
+
+        if (!matchName && !matchEmail && !matchSubject && !matchId) return false;
+      }
+
+      return true;
+    });
+  }, [teachers, hodFilter, gradeFilter, searchQuery]);
+
   const groupedByHod = useMemo(() => {
     const groups = hods
       .map((hod) => ({
         id: hod.id,
         name: hod.name || "Unnamed HOD",
-        teachers: teachers
+        teachers: filteredTeachers
           .filter((teacher) => teacher.hodIds?.includes(hod.id))
           .sort((a, b) => (a.name || "").localeCompare(b.name || "")),
       }))
       .filter((group) => group.teachers.length > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    const unassignedTeachers = teachers
+    const unassignedTeachers = filteredTeachers
       .filter((teacher) => !teacher.hodIds || teacher.hodIds.length === 0)
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
@@ -159,7 +206,7 @@ export default function Teachers() {
     }
 
     return groups;
-  }, [hods, teachers]);
+  }, [hods, filteredTeachers]);
 
   const handleDeleteTeacher = async () => {
     if (!deleteTarget) return;
@@ -189,11 +236,26 @@ export default function Teachers() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Teachers</h1>
-          <p className="text-muted-foreground text-sm">Edit teaching staff (new admissions via Admissions module)</p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold">Faculty & Teachers</h1>
+            <Badge variant="outline" className="text-xs">
+              {teachers.length} Total
+            </Badge>
+          </div>
+          <p className="text-muted-foreground text-sm">
+            Institutional faculty, departmental allocations, and subject specializations.
+          </p>
         </div>
+
+        <Link href="/admin/admissions">
+          <Button size="sm" className="gap-1.5 text-xs shadow-xs">
+            <Plus size={14} />
+            <span>Add Teacher</span>
+          </Button>
+        </Link>
       </div>
 
       {actionError && (
@@ -202,10 +264,103 @@ export default function Teachers() {
         </div>
       )}
 
+      {/* Search & Filter Bar */}
+      <Card className="glass-card shadow-xs mb-6">
+        <CardContent className="p-4">
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="flex-1">
+              <SearchInput
+                value={searchQuery}
+                onChange={setSearchQuery}
+                placeholder="Search by Teacher Name, Email, Subject specialization, Staff ID..."
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="h-10 rounded-xl border border-white/80 bg-white/80 px-3 text-xs font-medium text-slate-700 shadow-xs focus:outline-none focus:ring-2 focus:ring-primary/20"
+                value={hodFilter}
+                onChange={(e) => setHodFilter(e.target.value)}
+              >
+                <option value="all">All HOD Departments</option>
+                {hods.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    HOD: {h.name}
+                  </option>
+                ))}
+                <option value="unassigned">Unassigned HOD</option>
+              </select>
+
+              <select
+                className="h-10 rounded-xl border border-white/80 bg-white/80 px-3 text-xs font-medium text-slate-700 shadow-xs focus:outline-none focus:ring-2 focus:ring-primary/20"
+                value={gradeFilter}
+                onChange={(e) => setGradeFilter(e.target.value)}
+              >
+                <option value="all">All Grades</option>
+                {GRADES.map((g) => (
+                  <option key={g} value={g}>
+                    Grade {g}
+                  </option>
+                ))}
+              </select>
+
+              {(searchQuery || hodFilter !== "all" || gradeFilter !== "all") && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setHodFilter("all");
+                    setGradeFilter("all");
+                  }}
+                  className="text-xs text-muted-foreground hover:text-slate-900"
+                >
+                  Reset
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Empty State: Zero Teachers in Database */}
       {teachers.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            No teachers added yet. Add records via Admissions module.
+        <Card className="border-dashed border-2 border-slate-200">
+          <CardContent className="py-16 text-center flex flex-col items-center justify-center">
+            <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-4">
+              <GraduationCap className="w-7 h-7" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-800">No Teachers Added Yet</h3>
+            <p className="text-sm text-muted-foreground max-w-md mt-1 mb-5">
+              The faculty directory is currently empty. Register and onboard teachers through the Admissions module.
+            </p>
+            <Link href="/admin/admissions">
+              <Button className="gap-2">
+                <Plus size={16} /> Register First Teacher
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      ) : filteredTeachers.length === 0 ? (
+        /* Empty State: Search filter returned 0 */
+        <Card className="border-dashed border-slate-200">
+          <CardContent className="py-12 text-center flex flex-col items-center justify-center">
+            <Search className="w-8 h-8 text-slate-300 mb-2" />
+            <p className="text-sm font-semibold text-slate-700">No teachers match your search criteria</p>
+            <p className="text-xs text-muted-foreground mt-0.5 mb-4">
+              Try adjusting your query or resetting filters.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSearchQuery("");
+                setHodFilter("all");
+                setGradeFilter("all");
+              }}
+            >
+              Clear Search & Filters
+            </Button>
           </CardContent>
         </Card>
       ) : (
@@ -223,58 +378,66 @@ export default function Teachers() {
                 {group.teachers.map((t) => {
                   const grades = getTeacherGrades(t);
                   return (
-                    <Card key={t.id}>
+                    <Card key={t.id} className="overflow-hidden hover:shadow-sm transition-shadow">
                       <CardContent className="pt-5">
                         <div className="flex items-center gap-3 mb-3">
                           {t.photo ? (
-                            <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover" />
+                            <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover border" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
                               <UserIcon size={18} className="text-blue-500" />
                             </div>
                           )}
-                          <div>
-                            <p className="font-semibold">{t.name}</p>
-                            <p className="text-xs text-muted-foreground">{t.email}</p>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-slate-900 truncate">{t.name}</p>
+                            <p className="text-xs text-muted-foreground truncate">{t.email}</p>
                           </div>
                         </div>
-                        <div className="space-y-1.5 text-sm">
+
+                        <div className="space-y-1.5 text-sm bg-slate-50/60 p-3 rounded-xl border border-slate-100">
                           <div className="flex justify-between">
-                            <span className="text-muted-foreground">Subject</span>
-                            <span className="font-medium">{t.subject}</span>
+                            <span className="text-muted-foreground text-xs">Subject</span>
+                            <span className="font-medium text-xs text-slate-800">{t.subject}</span>
                           </div>
                           {t.DOB && (
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">DOB</span>
-                              <span>{t.DOB}</span>
+                              <span className="text-muted-foreground text-xs">DOB</span>
+                              <span className="text-xs">{t.DOB}</span>
                             </div>
                           )}
                           {getTeacherHodNames(t) && (
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">HOD(s)</span>
-                              <span className="text-right max-w-[140px] truncate">{getTeacherHodNames(t)}</span>
+                              <span className="text-muted-foreground text-xs">HOD(s)</span>
+                              <span className="text-right text-xs max-w-[140px] truncate text-slate-700">
+                                {getTeacherHodNames(t)}
+                              </span>
                             </div>
                           )}
                           {grades.length > 0 && (
                             <div className="pt-1 flex flex-wrap gap-1">
                               {grades.map((g) => (
-                                <span key={g} className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
-                                  G{g}
+                                <span
+                                  key={g}
+                                  className="text-[10px] bg-slate-200/70 text-slate-700 px-1.5 py-0.5 rounded font-medium"
+                                >
+                                  Gr {g}
                                 </span>
                               ))}
                             </div>
                           )}
                         </div>
-                        <div className="mt-4 flex justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => openEdit(t)}>Edit</Button>
+
+                        <div className="flex gap-2 justify-end mt-4 border-t pt-3">
+                          <Button size="sm" variant="outline" className="text-xs h-8" onClick={() => openEdit(t)}>
+                            Edit
+                          </Button>
                           <Button
-                            type="button"
+                            size="sm"
                             variant="ghost"
-                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            className="text-destructive hover:bg-destructive/10 text-xs h-8 px-2"
                             onClick={() => setDeleteTarget(t)}
                           >
-                            <Trash2 size={15} />
-                            Delete
+                            <Trash2 size={13} />
                           </Button>
                         </div>
                       </CardContent>
@@ -287,154 +450,73 @@ export default function Teachers() {
         </div>
       )}
 
-      <Dialog open={open} onOpenChange={(v) => { if (!v) resetForm(); setOpen(v); }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      {/* Edit Teacher Modal */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Edit Teacher</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
-                {error}
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Full Name *</Label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Date of Birth</Label>
-                <Input
-                  type="date"
-                  value={form.DOB}
-                  onChange={(e) => setForm((f) => ({ ...f, DOB: e.target.value }))}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Email *</Label>
-                <Input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Password</Label>
-                <Input
-                  type="password"
-                  value={form.password}
-                  disabled
-                  placeholder="Not editable here"
-                />
-              </div>
-            </div>
-
+            {error && <p className="text-xs text-destructive">{error}</p>}
             <div className="space-y-1.5">
-              <Label>Subject *</Label>
+              <Label>Name</Label>
+              <Input
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Email</Label>
+              <Input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Subject</Label>
               <Input
                 value={form.subject}
                 onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))}
                 required
-                placeholder="e.g. Mathematics"
               />
             </div>
-
             <div className="space-y-1.5">
-              <Label>Photo (JPG/JPEG)</Label>
+              <Label>Date of Birth</Label>
               <Input
-                type="file"
-                accept=".jpg,.jpeg"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onloadend = () => {
-                    setForm((f) => ({ ...f, photo: typeof reader.result === "string" ? reader.result : "" }));
-                  };
-                  reader.readAsDataURL(file);
-                }}
+                type="date"
+                value={form.DOB}
+                onChange={(e) => setForm((f) => ({ ...f, DOB: e.target.value }))}
               />
-              {form.photo ? (
-                <div className="flex items-center gap-3 rounded-lg border border-border p-2">
-                  <img src={form.photo} alt="Preview" className="h-10 w-10 rounded-full object-cover" />
-                  <p className="text-xs text-muted-foreground">Preview saved in record</p>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">Accepted: JPG/JPEG. Stored with the teacher record.</p>
-              )}
             </div>
-
             <div className="space-y-2">
-              <Label>Assign HOD(s) *</Label>
-              <p className="text-xs text-muted-foreground">
-                Select one or more HODs. Grades are inherited automatically.
-              </p>
-              {hods.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">No HODs available. Create HODs first.</p>
-              ) : (
-                <div className="space-y-2">
-                  {hods.map((hod) => {
-                    const selected = form.selectedHodIds.includes(hod.id);
-                    const grades = getHodGrades(hod.id);
-                    return (
-                      <button
-                        key={hod.id}
-                        type="button"
-                        onClick={() => toggleHod(hod.id)}
-                        className={`w-full flex items-start gap-3 px-4 py-3 rounded-lg border-2 text-left transition-colors ${
-                          selected
-                            ? "border-primary bg-primary/5"
-                            : "border-border hover:bg-muted"
-                        }`}
-                      >
-                        <div className="mt-0.5 text-primary shrink-0">
-                          {selected ? <CheckSquare size={16} /> : <Square size={16} className="text-muted-foreground" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm">{hod.name}</p>
-                          {grades.length > 0 ? (
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                              Grades: {grades.join(", ")}
-                            </p>
-                          ) : (
-                            <p className="text-xs text-muted-foreground mt-0.5">No grades assigned</p>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {form.selectedHodIds.length > 0 && (
-              <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3">
-                <p className="text-xs font-semibold text-blue-700 mb-2">Inherited Grade Coverage:</p>
-                {form.selectedHodIds.map((hodId) => {
-                  const hod = hods.find((h) => h.id === hodId);
-                  const grades = getHodGrades(hodId);
+              <Label>Assign to HODs</Label>
+              <div className="space-y-1 max-h-40 overflow-y-auto border rounded p-2">
+                {hods.map((h) => {
+                  const selected = form.selectedHodIds.includes(h.id);
+                  const grades = getHodGrades(h.id);
                   return (
-                    <div key={hodId} className="text-xs text-blue-700 flex items-center gap-2 mb-1">
-                      <span className="font-medium">{hod?.name}:</span>
-                      <span>{grades.length > 0 ? `Grades ${grades.join(", ")}` : "No grades"}</span>
+                    <div
+                      key={h.id}
+                      onClick={() => toggleHod(h.id)}
+                      className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer text-sm"
+                    >
+                      {selected ? <CheckSquare size={16} className="text-primary" /> : <Square size={16} />}
+                      <div>
+                        <p className="font-medium text-xs">{h.name}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          Grades: {grades.join(", ") || "None"}
+                        </p>
+                      </div>
                     </div>
                   );
                 })}
               </div>
-            )}
-
+            </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => { setOpen(false); resetForm(); }}>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={loading}>
@@ -445,13 +527,13 @@ export default function Teachers() {
         </DialogContent>
       </Dialog>
 
+      {/* Delete Confirmation Alert */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(nextOpen) => !nextOpen && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Teacher?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deleteTarget?.name} will be removed from the admin teacher list, linked subject assignments, and class-teacher mapping.
-              The Firebase authentication account is not removed in this client-only flow.
+              {deleteTarget?.name} will be removed from the teachers directory and unlinked from classes.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

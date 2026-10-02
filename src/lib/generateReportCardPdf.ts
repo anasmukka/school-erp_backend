@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "./firebase";
 import { PublishedReportCardSnapshot } from "./resultEngine";
 import {
@@ -7,11 +7,24 @@ import {
   DEFAULT_SCHOLASTIC_TABLE_CONFIG,
   DEFAULT_CO_SCHOLASTIC_CONFIG,
 } from "./academicStructure";
+import { PRESTIGE_LOGO_DATA_URL, PRESTIGE_LOGO_DIMENSIONS } from "./schoolLogoAsset";
+import { CBSE_LOGO_DATA_URL, CBSE_LOGO_DIMENSIONS } from "./cbseLogoAsset";
 
+/**
+ * Fetches active institutional signatures for report card rendering.
+ * Returns a map keyed by signatory role (admin, hod, class_teacher).
+ * Uses the denormalized `imageUrl` on the signature profile, which always
+ * reflects the currently active version.
+ *
+ * NOTE: Finalized report card documents that need to preserve a specific
+ * version should store the versionId in the published snapshot. This function
+ * is used for LIVE/draft rendering only.
+ */
 interface SigData {
   userId: string;
   role?: string;
   name: string;
+  designation: string;
   imageUrl: string;
 }
 
@@ -21,9 +34,22 @@ async function fetchSignatures(): Promise<Record<string, SigData>> {
     const map: Record<string, SigData> = {};
     snap.docs.forEach((d) => {
       const data = d.data() as any;
-      const key = String(data.role || d.id || "").trim();
-      if (key && data.imageUrl) {
-        map[key] = { userId: d.id, role: data.role, name: data.name || "", imageUrl: data.imageUrl };
+      const role = String(data.role || "").trim();
+      const imageUrl = String(data.imageUrl || "").trim();
+      // Only include authorized signatory roles that are active
+      if (
+        role &&
+        imageUrl &&
+        data.status === "active" &&
+        ["admin", "hod", "class_teacher"].includes(role)
+      ) {
+        map[role] = {
+          userId: d.id,
+          role,
+          name: data.name || "",
+          designation: data.designation || "",
+          imageUrl,
+        };
       }
     });
     return map;
@@ -90,10 +116,10 @@ function drawCell(
   doc.setTextColor(0, 0, 0);
 }
 
-export async function generateReportCardPdf(
+export async function buildReportCardPdfDocument(
   snapshot: PublishedReportCardSnapshot,
   gradingScale?: GradingScale
-): Promise<void> {
+): Promise<jsPDF> {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const ML = 12;
   const W = 210;
@@ -113,26 +139,78 @@ export async function generateReportCardPdf(
   doc.setLineWidth(0.2);
   doc.rect(ML - 1, y - 1, TW + 2, 274, "S");
 
-  // 1. School Header
-  doc.setFont("times", "bold");
-  doc.setFontSize(16);
-  doc.text(snapshot.layoutConfig?.schoolName || "PRESTIGE INTERNATIONAL SCHOOL", W / 2, y + 6, {
-    align: "center",
-  });
+  // 1. School Header & Institutional CBSE Branding
+  // Hierarchy: [ SCHOOL LOGO ]        PRESTIGE INTERNATIONAL SCHOOL        [ CBSE LOGO ]
+  const showSchoolLogo = snapshot.layoutConfig?.showSchoolLogo !== false;
+  const showBoardLogo = snapshot.layoutConfig?.showBoardLogo !== false;
 
-  doc.setFont("times", "normal");
-  doc.setFontSize(8);
-  doc.text(snapshot.layoutConfig?.tagline || "Excellence in Education", W / 2, y + 11, {
-    align: "center",
-  });
+  const logoMaxW = 17;
+  const logoMaxH = 17;
+  const logoY = y + 0.5;
+
+  if (showSchoolLogo) {
+    // Official Prestige School Logo (Aspect Ratio ~1.026)
+    const schoolAspect = PRESTIGE_LOGO_DIMENSIONS.aspectRatio || 1.026;
+    let sW = logoMaxW;
+    let sH = logoMaxW / schoolAspect;
+    if (sH > logoMaxH) {
+      sH = logoMaxH;
+      sW = logoMaxH * schoolAspect;
+    }
+    const sX = ML + 2;
+    doc.addImage(PRESTIGE_LOGO_DATA_URL, "PNG", sX, logoY, sW, sH);
+  }
+
+  if (showBoardLogo) {
+    // Official CBSE Board Logo (Square Aspect Ratio 1.0)
+    const cbseAspect = CBSE_LOGO_DIMENSIONS.aspectRatio || 1.0;
+    let bW = logoMaxW;
+    let bH = logoMaxW / cbseAspect;
+    if (bH > logoMaxH) {
+      bH = logoMaxH;
+      bW = logoMaxH * cbseAspect;
+    }
+    const bX = W - ML - 2 - bW;
+    doc.addImage(CBSE_LOGO_DATA_URL, "PNG", bX, logoY, bW, bH);
+  }
+
+  // Centralized Header Typography
+  doc.setFont("times", "bold");
+  doc.setFontSize(15);
   doc.text(
-    snapshot.layoutConfig?.affiliationNo || "Affiliated to CBSE, New Delhi",
+    (snapshot.layoutConfig?.schoolName || "PRESTIGE INTERNATIONAL SCHOOL").trim().toUpperCase(),
     W / 2,
-    y + 15,
+    y + 5,
     { align: "center" }
   );
 
-  y += 18;
+  doc.setFont("times", "italic");
+  doc.setFontSize(8);
+  doc.text(
+    snapshot.layoutConfig?.tagline || "SCALING NEW HEIGHTS WITH EXCELLENCE",
+    W / 2,
+    y + 9.5,
+    { align: "center" }
+  );
+
+  doc.setFont("times", "normal");
+  doc.setFontSize(7.5);
+  doc.text(
+    snapshot.layoutConfig?.affiliationNo || "Affiliated to CBSE, New Delhi — Senior Secondary Sector",
+    W / 2,
+    y + 13.5,
+    { align: "center" }
+  );
+
+  if (
+    snapshot.layoutConfig?.schoolAddress &&
+    snapshot.layoutConfig.schoolAddress !== snapshot.layoutConfig.affiliationNo
+  ) {
+    doc.setFontSize(7);
+    doc.text(snapshot.layoutConfig.schoolAddress, W / 2, y + 17, { align: "center" });
+  }
+
+  y += 19;
 
   // Title Banner
   const periodLabel =
@@ -538,6 +616,8 @@ export async function generateReportCardPdf(
     doc,
     ML,
     y,
+    TW,
+    6,
     isAnnual
       ? `Promoted to:  ${snapshot.promotedToGrade || `Grade ${Number(snapshot.grade || 5) + 1}`}`
       : `Evaluation Status: Mid-Term Evaluation for ${snapshot.reportPeriod === "term_1" ? "Term 1" : "Term 2"} (Promotion evaluated on Annual Report)`,
@@ -546,22 +626,73 @@ export async function generateReportCardPdf(
   y += 14;
 
   // 6. Institutional Signatures
+  // Slots: Class Teacher (class_teacher role) | Section Head / HOD (hod role) | Principal (admin role)
   const sigW = TW / 3;
-  drawCell(doc, ML, y, sigW, 14, "", { border: false });
-  drawCell(doc, ML + sigW, y, sigW, 14, "", { border: false });
-  drawCell(doc, ML + sigW * 2, y, sigW, 14, "", { border: false });
+  const sigAreaH = 16;
+  const sigImgMaxH = 9;
+  const sigImgMaxW = sigW - 20;
+  const sigLineY = y + sigAreaH - 6;
+
+  // Helper: render a signature image above a line if available
+  async function renderSigImage(imgUrl: string, centerX: number) {
+    try {
+      const { loadImageDataUrl } = await import("./generateHallTicketPdf");
+      const img = await loadImageDataUrl(imgUrl);
+      if (!img) return;
+      const aspect = img.width / img.height;
+      let iW = sigImgMaxW;
+      let iH = sigImgMaxH;
+      if (aspect >= sigImgMaxW / sigImgMaxH) {
+        iW = sigImgMaxW;
+        iH = sigImgMaxW / aspect;
+      } else {
+        iH = sigImgMaxH;
+        iW = sigImgMaxH * aspect;
+      }
+      const iX = centerX - iW / 2;
+      const iY = sigLineY - iH - 1;
+      doc.addImage(img.dataUrl, img.format, iX, iY, iW, iH);
+    } catch {
+      // Signature image could not be loaded — skip silently
+    }
+  }
+
+  const ctSig = signatures["class_teacher"];
+  const hodSig = signatures["hod"];
+  const adminSig = signatures["admin"];
+
+  const ctCenterX = ML + sigW / 2;
+  const hodCenterX = ML + sigW + sigW / 2;
+  const adminCenterX = ML + sigW * 2 + sigW / 2;
+
+  // Place signature images (async inline — PDF rendering is serial)
+  if (ctSig?.imageUrl) await renderSigImage(ctSig.imageUrl, ctCenterX);
+  if (hodSig?.imageUrl) await renderSigImage(hodSig.imageUrl, hodCenterX);
+  if (adminSig?.imageUrl) await renderSigImage(adminSig.imageUrl, adminCenterX);
 
   // Draw signature line rules
+  doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.3);
-  doc.line(ML + 10, y + 10, ML + sigW - 10, y + 10);
-  doc.line(ML + sigW + 10, y + 10, ML + sigW * 2 - 10, y + 10);
-  doc.line(ML + sigW * 2 + 10, y + 10, ML + TW - 10, y + 10);
+  doc.line(ML + 8, sigLineY, ML + sigW - 8, sigLineY);
+  doc.line(ML + sigW + 8, sigLineY, ML + sigW * 2 - 8, sigLineY);
+  doc.line(ML + sigW * 2 + 8, sigLineY, ML + TW - 8, sigLineY);
 
+  // Designation labels (use stored designation if available, otherwise defaults)
   doc.setFont("times", "bold");
-  doc.setFontSize(7.5);
-  doc.text("Class Teacher", ML + sigW / 2, y + 14, { align: "center" });
-  doc.text("Section Head / HOD", ML + sigW + sigW / 2, y + 14, { align: "center" });
-  doc.text("Principal", ML + sigW * 2 + sigW / 2, y + 14, { align: "center" });
+  doc.setFontSize(7);
+  doc.setTextColor(0, 0, 0);
+  doc.text(ctSig?.designation || "Class Teacher", ctCenterX, sigLineY + 3.5, { align: "center" });
+  doc.text(hodSig?.designation || "Section Head / HOD", hodCenterX, sigLineY + 3.5, { align: "center" });
+  doc.text(adminSig?.designation || "Principal", adminCenterX, sigLineY + 3.5, { align: "center" });
+
+  // Name labels below designation
+  doc.setFont("times", "normal");
+  doc.setFontSize(6);
+  if (ctSig?.name) doc.text(`(${ctSig.name})`, ctCenterX, sigLineY + 7, { align: "center" });
+  if (hodSig?.name) doc.text(`(${hodSig.name})`, hodCenterX, sigLineY + 7, { align: "center" });
+  if (adminSig?.name) doc.text(`(${adminSig.name})`, adminCenterX, sigLineY + 7, { align: "center" });
+
+  y += sigAreaH + 8;
 
   // ==========================================
   // PAGE 2: GRADING SCALE REFERENCE
@@ -628,6 +759,14 @@ export async function generateReportCardPdf(
     y2 += 5;
   });
 
+  return doc;
+}
+
+export async function generateReportCardPdf(
+  snapshot: PublishedReportCardSnapshot,
+  gradingScale?: GradingScale
+): Promise<void> {
+  const doc = await buildReportCardPdfDocument(snapshot, gradingScale);
   const studentCleanName = (snapshot.studentName || snapshot.studentId).replace(/\s+/g, "_");
   doc.save(`ReportCard_${studentCleanName}_${snapshot.academicYear}.pdf`);
 }

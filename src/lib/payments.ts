@@ -1,24 +1,27 @@
+import { useState, useEffect } from "react";
 import { httpsCallable } from "firebase/functions";
-import { functions, db } from "@/lib/firebase";
-import {
-  collection,
-  doc,
-  addDoc,
-  getDocs,
-  query,
-  where,
-  setDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import type { FeePayment, FeePaymentMode } from "./types";
-import { logAuditEvent } from "./audit";
+import { functions } from "@/lib/firebase";
+import type { FeePaymentMode } from "./types";
+
+export type PaymentGatewayStatus = "active" | "not_configured" | "temporarily_unavailable";
+
+export interface PaymentGatewayCapability {
+  onlinePaymentsEnabled: boolean;
+  provider: "razorpay" | "none";
+  status: PaymentGatewayStatus;
+  keyId?: string | null;
+  message: string;
+}
 
 export interface PaymentOrderRequest {
   studentId: string;
   studentName?: string;
   grade?: string;
   structureId?: string;
+  assignmentId?: string;
   academicSession?: string;
+  termId?: string;
+  termName?: string;
   installmentIds: string[];
   installmentLabels?: string[];
   amount: number;
@@ -36,12 +39,16 @@ export interface PaymentOrderResponse {
 export interface PaymentVerificationRequest {
   orderId: string;
   paymentId: string;
-  signatureToken: string;
+  razorpaySignature: string;
+  signatureToken?: string;
   studentId: string;
   studentName: string;
   grade: string;
   structureId: string;
+  assignmentId?: string;
   academicSession: string;
+  termId?: string;
+  termName?: string;
   installmentId: string;
   installmentLabel: string;
   amount: number;
@@ -59,160 +66,174 @@ export interface PaymentVerificationResult {
   message: string;
 }
 
+let cachedCapability: { data: PaymentGatewayCapability; timestamp: number } | null = null;
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
 /**
- * Creates an authorized payment order with a cryptographic or unique idempotency token.
+ * Authoritatively queries the backend / Worker capabilities to determine if Razorpay
+ * online payments are configured and operational in this environment.
+ * Never exposes secrets; caches capability for 60 seconds unless forceRefresh is true.
+ */
+export async function getPaymentGatewayCapability(
+  forceRefresh = false
+): Promise<PaymentGatewayCapability> {
+  const now = Date.now();
+  if (!forceRefresh && cachedCapability && now - cachedCapability.timestamp < CACHE_TTL_MS) {
+    return cachedCapability.data;
+  }
+
+  const workerUrl =
+    (typeof import.meta !== "undefined" && import.meta.env?.VITE_WORKER_URL) ||
+    (typeof process !== "undefined" && process.env?.VITE_WORKER_URL) ||
+    "";
+
+  // 1. Check Cloudflare Worker edge capability endpoint if worker URL is available
+  if (workerUrl) {
+    try {
+      const cleanUrl = workerUrl.replace(/\/+$/, "");
+      const res = await fetch(`${cleanUrl}/api/payments/capabilities`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const cap: PaymentGatewayCapability = {
+          onlinePaymentsEnabled: Boolean(json.onlinePaymentsEnabled),
+          provider: json.provider === "razorpay" ? "razorpay" : "none",
+          status:
+            json.status ||
+            (json.onlinePaymentsEnabled ? "active" : "not_configured"),
+          keyId: json.keyId || null,
+          message:
+            json.message ||
+            (json.onlinePaymentsEnabled
+              ? "Online payment is active."
+              : "Online fee payments are currently unavailable. Please use the school counter for payment."),
+        };
+        cachedCapability = { data: cap, timestamp: now };
+        return cap;
+      }
+    } catch {
+      // Fall through to Firebase Functions
+    }
+  }
+
+  // 2. Fall back to Firebase Cloud Functions callable
+  try {
+    const callable = httpsCallable<void, PaymentGatewayCapability>(
+      functions,
+      "getPaymentGatewayConfig"
+    );
+    const result = await callable();
+    if (result.data) {
+      const cap: PaymentGatewayCapability = {
+        onlinePaymentsEnabled: Boolean(result.data.onlinePaymentsEnabled),
+        provider: result.data.provider === "razorpay" ? "razorpay" : "none",
+        status:
+          result.data.status ||
+          (result.data.onlinePaymentsEnabled ? "active" : "not_configured"),
+        keyId: result.data.keyId || null,
+        message:
+          result.data.message ||
+          (result.data.onlinePaymentsEnabled
+            ? "Online payment is active."
+            : "Online fee payments are currently unavailable. Please use the school counter for payment."),
+      };
+      cachedCapability = { data: cap, timestamp: now };
+      return cap;
+    }
+  } catch {
+    // Backend functions may not be reachable or deployed
+  }
+
+  // 3. Fallback safe default (safe fail-closed: not_configured)
+  const fallbackCap: PaymentGatewayCapability = {
+    onlinePaymentsEnabled: false,
+    provider: "none",
+    status: "not_configured",
+    keyId: null,
+    message: "Online fee payments are currently unavailable. Please use the school counter for payment.",
+  };
+  cachedCapability = { data: fallbackCap, timestamp: now };
+  return fallbackCap;
+}
+
+/**
+ * React Hook for UI components to access authoritative payment gateway capability.
+ */
+export function usePaymentCapability() {
+  const [capability, setCapability] = useState<PaymentGatewayCapability | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    getPaymentGatewayCapability().then((cap) => {
+      if (mounted) {
+        setCapability(cap);
+        setLoading(false);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return {
+    capability,
+    loading,
+    isOnlinePaymentActive: capability?.status === "active" && capability?.onlinePaymentsEnabled === true,
+    isComingSoon: capability?.status === "not_configured",
+    isTemporarilyUnavailable: capability?.status === "temporarily_unavailable",
+    refresh: async () => {
+      setLoading(true);
+      const cap = await getPaymentGatewayCapability(true);
+      setCapability(cap);
+      setLoading(false);
+      return cap;
+    },
+  };
+}
+
+/**
+ * Creates an authorized payment order with a cryptographic server HMAC signature token.
+ * All order generation and cryptographic signing is performed by trusted backend Cloud Functions.
+ * Blocks execution if online payments are not active.
  */
 export async function createFeePaymentOrder(
   payload: PaymentOrderRequest
 ): Promise<PaymentOrderResponse> {
-  try {
-    // Try calling cloud function if deployed
-    const callable = httpsCallable<PaymentOrderRequest, PaymentOrderResponse>(
-      functions,
-      "createFeePaymentOrder"
-    );
-    const result = await callable(payload);
-    if (result.data?.orderId) {
-      return result.data;
-    }
-  } catch (err) {
-    // Fall back to secure ERP payment intent token generator
-    console.info("Using standard ERP payment gateway gateway intent processor:", err);
+  const cap = await getPaymentGatewayCapability();
+  if (cap.status !== "active" || !cap.onlinePaymentsEnabled) {
+    throw new Error(cap.message || "Online fee payments are currently unavailable. Please use the school counter for payment.");
   }
 
-  // Generate verified order token
-  const now = new Date();
-  const timestamp = now.getTime();
-  const orderId = `ORDER_${payload.academicSession?.replace(/[^a-zA-Z0-9]/g, "") || "2026"}_${payload.studentId.slice(-4)}_${timestamp}`;
-  const signatureToken = `SIG_${Math.random().toString(36).substring(2, 12)}_${timestamp}`;
-
-  // Store payment intent for idempotency
-  try {
-    await setDoc(doc(db, "paymentIntents", orderId), {
-      orderId,
-      studentId: payload.studentId,
-      studentName: payload.studentName || "",
-      grade: payload.grade || "",
-      structureId: payload.structureId || "",
-      academicSession: payload.academicSession || "",
-      installmentIds: payload.installmentIds,
-      amount: payload.amount,
-      currency: "INR",
-      status: "pending",
-      signatureToken,
-      createdAt: now.toISOString(),
-    });
-  } catch (e) {
-    console.warn("Could not save paymentIntent doc (permission or offline):", e);
+  const callable = httpsCallable<PaymentOrderRequest, PaymentOrderResponse>(
+    functions,
+    "createFeePaymentOrder"
+  );
+  const result = await callable(payload);
+  if (!result.data || !result.data.orderId) {
+    throw new Error("Failed to create secure payment order from backend gateway.");
   }
-
-  return {
-    orderId,
-    amount: payload.amount,
-    currency: "INR",
-    signatureToken,
-    createdAt: now.toISOString(),
-  };
+  return result.data;
 }
 
 /**
- * Verifies the payment gateway transaction server-side and posts to the actual Fee Payment Ledger.
+ * Verifies the payment gateway transaction server-side and posts to the authoritative Fee Payment Ledger.
+ * All signature verification, atomic document writes, and ledger postings happen exclusively inside the trusted Cloud Function.
  * Ensures strict idempotency: duplicate webhooks/requests will not double charge or create duplicate payments.
  */
 export async function verifyAndRecordOnlineFeePayment(
   req: PaymentVerificationRequest,
-  currentUser: { id: string; name?: string; role?: string }
+  _currentUser?: { id: string; name?: string; role?: string }
 ): Promise<PaymentVerificationResult> {
-  const now = new Date();
-  const paidAt = now.toISOString().slice(0, 10);
-  const transactionId = req.paymentId || `TXN_${Date.now()}`;
-
-  // Idempotency check: check if payment with this transaction reference already exists in feePayments
-  const existingSnap = await getDocs(
-    query(
-      collection(db, "feePayments"),
-      where("reference", "==", transactionId)
-    )
+  const callable = httpsCallable<PaymentVerificationRequest, PaymentVerificationResult>(
+    functions,
+    "verifyAndRecordOnlineFeePayment"
   );
-
-  if (!existingSnap.empty) {
-    const existing = existingSnap.docs[0].data() as FeePayment;
-    return {
-      success: true,
-      paymentRecordId: existingSnap.docs[0].id,
-      receiptNo: existing.receiptNo || `RC-${existingSnap.docs[0].id.slice(-6)}`,
-      transactionId,
-      paidAt: existing.paidAt,
-      message: "Payment already verified and credited to ledger.",
-    };
+  const result = await callable(req);
+  if (!result.data || !result.data.success) {
+    throw new Error(result.data?.message || "Payment verification failed on server.");
   }
-
-  // Generate official receipt number
-  const receiptNo = `RC-ONL-${now.getFullYear()}-${String(timestampShort(now))}`;
-
-  const paymentData: Omit<FeePayment, "id"> = {
-    academicSession: req.academicSession,
-    grade: req.grade,
-    structureId: req.structureId,
-    studentId: req.studentId,
-    studentName: req.studentName,
-    installmentId: req.installmentId,
-    installmentLabel: req.installmentLabel,
-    amount: Number(req.amount),
-    paymentMode: req.paymentMode || "online",
-    reference: transactionId,
-    notes: `Online Gateway Payment verified (Order: ${req.orderId})`,
-    paidAt,
-    recordedBy: currentUser.id || "online_gateway",
-    receiptNo,
-  };
-
-  const docRef = await addDoc(collection(db, "feePayments"), paymentData);
-
-  // Update payment intent status
-  try {
-    await setDoc(
-      doc(db, "paymentIntents", req.orderId),
-      {
-        status: "completed",
-        paymentRecordId: docRef.id,
-        receiptNo,
-        verifiedAt: now.toISOString(),
-      },
-      { merge: true }
-    );
-  } catch (e) {
-    /* non-blocking */
-  }
-
-  // Audit log entry
-  await logAuditEvent({
-    userId: currentUser.id || "online_gateway",
-    userName: currentUser.name || "Payment Gateway",
-    role: (currentUser.role as any) || "student",
-    action: "create",
-    entity: "printing",
-    entityId: docRef.id,
-    details: `Online Fee Payment verified: ₹${req.amount} for ${req.studentName} (${req.installmentLabel}) - Receipt: ${receiptNo}`,
-    metadata: {
-      orderId: req.orderId,
-      transactionId,
-      amount: req.amount,
-      receiptNo,
-      installmentId: req.installmentId,
-    },
-  });
-
-  return {
-    success: true,
-    paymentRecordId: docRef.id,
-    receiptNo,
-    transactionId,
-    paidAt,
-    message: "Payment successfully verified and posted to the official fee ledger.",
-  };
-}
-
-function timestampShort(d: Date): string {
-  return `${d.getMonth() + 1}${d.getDate()}-${d.getHours()}${d.getMinutes()}${Math.floor(Math.random() * 90 + 10)}`;
+  return result.data;
 }

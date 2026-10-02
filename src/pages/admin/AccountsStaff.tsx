@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { deleteApp, initializeApp } from "firebase/app";
+import { createUserWithEmailAndPassword, getAuth } from "firebase/auth";
 import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+import firebaseApp, { auth, db } from "@/lib/firebase";
 import { User } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,19 +51,32 @@ export default function AccountsStaff() {
     setError("");
     setLoading(true);
 
+    let scopedApp: any = null;
     try {
-      const credential = await createUserWithEmailAndPassword(auth, form.email, form.password);
-      await setDoc(doc(db, "users", credential.user.uid), {
-        name: form.name,
-        email: form.email,
+      const normalizedEmail = form.email.trim().toLowerCase();
+      const scopedAppName = `accounts-provision-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      scopedApp = initializeApp(firebaseApp.options, scopedAppName);
+      const scopedAuth = getAuth(scopedApp);
+
+      const credential = await createUserWithEmailAndPassword(scopedAuth, normalizedEmail, form.password.trim());
+      const uid = credential.user.uid;
+
+      await setDoc(doc(db, "users", uid), {
+        name: form.name.trim(),
+        email: normalizedEmail,
         role: "accountant",
+        createdAt: new Date().toISOString(),
       });
+
       setOpen(false);
       resetForm();
       await load();
     } catch (err: any) {
       setError(err?.message ?? "Failed to create accounts staff user.");
     } finally {
+      if (scopedApp) {
+        await deleteApp(scopedApp).catch(() => {});
+      }
       setLoading(false);
     }
   };

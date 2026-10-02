@@ -97,15 +97,27 @@ export interface FeeInstallment {
   label: string;
   amount: number;
   dueDate: string;
+  termId?: string;
+  termName?: string;
+  order?: number;
+}
+
+export interface FeeStructureTerm {
+  termId: string;
+  termName: string;
+  order: number;
+  installments: FeeInstallment[];
 }
 
 export interface FeeStructure {
   id: string;
-  academicSession: string;
+  academicSessionId?: string; // Canonical session ID (references academicSessions collection)
+  academicSession: string; // Human-readable session label (e.g., '2026-27')
   grade: string;
   title: string;
   term?: "term1" | "term2" | "full_year";
   feeHeads: FeeHead[];
+  terms?: FeeStructureTerm[];
   installments: FeeInstallment[];
   notes?: string;
   createdAt: string;
@@ -120,17 +132,24 @@ export interface FeePayment {
   academicSession: string;
   grade: string;
   structureId: string;
+  assignmentId?: string;
   studentId: string;
+  studentUid?: string;
   studentName: string;
   installmentId: string;
   installmentLabel: string;
+  termId?: string;
+  termName?: string;
   amount: number;
   paymentMode: FeePaymentMode;
   reference?: string;
+  orderId?: string;
   notes?: string;
   paidAt: string;
   recordedBy: string;
   receiptNo?: string;
+  verificationStatus?: "verified" | "pending" | "failed" | "voided";
+  verifiedAt?: string;
 }
 
 export type SubjectCategory = "scholastic" | "co-scholastic";
@@ -400,7 +419,7 @@ export interface ResultRelease {
   releasedByName?: string;
 }
 
-export type ProfileChangeRequestStatus = "pending" | "reviewed" | "approved" | "rejected";
+export type ProfileChangeRequestStatus = "pending" | "under_review" | "approved" | "rejected" | "cancelled";
 
 export interface ProfileChangeRequest {
   id: string;
@@ -556,6 +575,7 @@ export interface LibraryFineRule {
   standardDurationDaysStaff: number;
   maxBorrowLimitStudent: number;
   maxBorrowLimitStaff: number;
+  reminderDaysBeforeDue?: number;
   updatedAt?: string;
 }
 
@@ -711,7 +731,12 @@ export type AuditEntityType =
   | "inventory_item"
   | "stock_movement"
   | "uniform"
-  | "textbook";
+  | "textbook"
+  | "fee_assignment"
+  | "fee_concession"
+  | "fee_ledger"
+  | "fee_head"
+  | "fee_payment";
 
 export interface AuditLogRecord {
   id: string;
@@ -849,6 +874,7 @@ export interface UnifiedCalendarItem {
 export type HallTicketFeeRequirementType =
   | "installment_percentage"
   | "installment_full"
+  | "term_full"
   | "all_due_cleared"
   | "specific_amount";
 
@@ -886,7 +912,7 @@ export interface HallTicketBypass {
   sectionName?: string | null;
   sessionId: string;
   academicYear: string;
-  definedExamId: string;
+  definedExamId?: string;
   examName: string;
   scheduleId?: string;
   reason: string;
@@ -917,8 +943,8 @@ export interface HallTicketSubjectSchedule {
   subjectName: string;
   date: string; // YYYY-MM-DD
   dayName?: string; // e.g. "Monday"
-  startTime: string; // HH:mm
-  endTime: string; // HH:mm
+  startTime?: string; // HH:mm
+  endTime?: string; // HH:mm
   venue: string; // Room / Hall
   maxMarks?: number;
   passingMarks?: number;
@@ -951,8 +977,12 @@ export interface HallTicket {
   schoolDetails: {
     name: string;
     affiliationNo?: string;
+    schoolCode?: string;
     address?: string;
     tagline?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
     logoUrl?: string;
   };
   scheduledSubjects: HallTicketSubjectSchedule[];
@@ -970,6 +1000,8 @@ export interface HallTicket {
     outstanding?: number;
     evaluatedAt: string;
   };
+  principalSignatureUrl?: string;
+  principalName?: string;
   qrCodeData: string;
   generatedAt: string;
   generatedBy: {
@@ -978,6 +1010,14 @@ export interface HallTicket {
     role: string;
   };
   updatedAt: string;
+  r2ObjectMetadata?: {
+    objectKey: string;
+    contentType: string;
+    generatedAt: string;
+    generatedBy: string;
+    version: number;
+    status: string;
+  };
 }
 
 export interface HallTicketGlobalSettings {
@@ -986,6 +1026,17 @@ export interface HallTicketGlobalSettings {
   defaultInstructions: string[];
   updatedAt: string;
   updatedBy: string;
+  schoolDetails?: {
+    name?: string;
+    affiliationNo?: string;
+    schoolCode?: string;
+    address?: string;
+    tagline?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+    logoUrl?: string;
+  };
 }
 
 export interface HallTicketStudentEligibility {
@@ -997,6 +1048,10 @@ export interface HallTicketStudentEligibility {
   grade: string;
   sectionId?: string | null;
   sectionName?: string | null;
+  studentPhotoUrl?: string;
+  dob?: string;
+  fatherName?: string;
+  motherName?: string;
   eligible: boolean;
   status: "eligible" | "blocked" | "bypass_approved";
   reason: string;
@@ -1011,7 +1066,221 @@ export interface HallTicketStudentEligibility {
     paidPercentage?: number;
     requiredPercentage?: number;
   };
+  pendingBypass?: HallTicketBypass | null;
   bypass?: HallTicketBypass | null;
   existingHallTicket?: HallTicket | null;
 }
 
+// ==========================================
+// 9. NEW FEE SYSTEM TYPES
+// ==========================================
+
+export interface MasterFeeHead {
+  id: string;
+  name: string;
+  category: 'tuition' | 'technology' | 'sports' | 'examination' | 'transport' | 'books' | 'uniform' | 'cca' | 'admission' | 'annual' | 'other';
+  description?: string;
+  isDefault: boolean;
+  sortOrder: number;
+  status: 'active' | 'archived';
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type MasterFeeHeadCategory = MasterFeeHead['category'];
+
+export type FeeStructureStatus = 'draft' | 'active' | 'archived';
+
+export interface FeeStructureV2 extends FeeStructure {
+  version: number;
+  status: FeeStructureStatus;
+  effectiveDate?: string;
+  updatedBy?: string;
+}
+
+export type FeeLineItemCategory = 'base' | 'additional' | 'transport' | 'other';
+
+export interface FeeLineItem {
+  id: string;
+  feeHeadId: string;
+  feeHeadName: string;
+  amount: number;
+  category: FeeLineItemCategory;
+}
+
+export type ConcessionType = 'scholarship' | 'sibling_discount' | 'staff_concession' | 'financial_concession' | 'management_concession' | 'other';
+export type ConcessionStatus = 'pending_approval' | 'active' | 'rejected' | 'revoked';
+
+export interface FeeConcession {
+  id: string;
+  type: ConcessionType;
+  label: string;
+  amount: number;
+  percentage: number | null;
+  affectedFeeHeadId: string | null;
+  reason: string;
+  requestedBy?: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  approvedBy?: string;
+  approvedByName?: string;
+  approvedAt?: string;
+  rejectedBy?: string;
+  rejectedByName?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  status: ConcessionStatus;
+}
+
+export type AssignmentInstallmentStatus = 'upcoming' | 'due' | 'partially_paid' | 'paid' | 'overdue' | 'waived';
+
+export interface AssignmentInstallment {
+  id: string;
+  label: string;
+  amount: number;
+  dueDate: string;
+  status: AssignmentInstallmentStatus;
+  termId?: string;
+  termName?: string;
+  order?: number;
+}
+
+export interface AssignmentTerm {
+  termId: string;
+  termName: string;
+  order: number;
+  installments: AssignmentInstallment[];
+}
+
+export type FeeAssignmentStatus = 'active' | 'voided' | 'superseded';
+
+export interface FeeStructureSnapshot {
+  title: string;
+  grade: string;
+  academicSessionId?: string;
+  academicSession?: string;
+  feeHeads: FeeHead[];
+  terms?: FeeStructureTerm[];
+  installments: FeeInstallment[];
+  term?: string;
+  createdAt: string;
+}
+
+export interface StudentFeeAssignment {
+  id: string;
+  studentId: string;
+  studentUid?: string;
+  authUid?: string;
+  studentName: string;
+  admissionNo: string;
+  grade: string;
+  sectionId: string | null;
+  sectionName: string | null;
+  sessionId: string;
+  academicYear: string;
+  enrollmentId: string;
+  structureId: string;
+  structureVersion: number;
+  structureSnapshot: FeeStructureSnapshot;
+  lineItems: FeeLineItem[];
+  concessions: FeeConcession[];
+  terms?: AssignmentTerm[];
+  installments: AssignmentInstallment[];
+  grossAmount: number;
+  discountAmount: number;
+  netAmount: number;
+  status: FeeAssignmentStatus;
+  version: number;
+  assignedBy: string;
+  assignedByName: string;
+  assignedAt: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type FeeLedgerEntryType = 'charge' | 'concession' | 'payment' | 'adjustment' | 'refund' | 'waiver';
+
+export interface FeeLedgerEntry {
+  id: string;
+  studentId: string;
+  studentUid?: string;
+  assignmentId: string;
+  sessionId: string;
+  type: FeeLedgerEntryType;
+  description: string;
+  amount: number;
+  feeHeadId?: string;
+  feeHeadName?: string;
+  termId?: string;
+  termName?: string;
+  installmentId?: string;
+  installmentLabel?: string;
+  referenceId?: string;
+  referenceType?: string;
+  verificationStatus?: 'verified' | 'pending' | 'voided';
+  recordedBy: string;
+  recordedByName: string;
+  createdAt: string;
+}
+
+export interface FeePaymentV2 extends FeePayment {
+  assignmentId: string;
+  feeHeadAllocations?: Array<{
+    feeHeadId: string;
+    feeHeadName: string;
+    amount: number;
+  }>;
+  studentUid?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
+  isVoided?: boolean;
+}
+
+// ==========================================
+// 10. PROFILE CHANGE REQUEST SYSTEM (ENHANCED)
+// ==========================================
+
+export type ProfileChangeRequestV2Status = ProfileChangeRequestStatus;
+
+export type ProfileChangeRequestField =
+  // Student fields
+  | "name" | "DOB" | "gender" | "address" | "phone" | "email"
+  | "fatherName" | "motherName" | "parentContact" | "guardianInfo"
+  // Staff fields
+  | "designation" | "department" | "staffPhone" | "staffAddress"
+  // Parent fields
+  | "parentName" | "parentPhone" | "parentEmail" | "parentAddress"
+  // Generic
+  | "other";
+
+export interface ProfileChangeRequestV2 {
+  id: string;
+  // Identity — resolved from auth, never client-supplied
+  userId: string;          // Firebase Auth UID of the requester
+  userName: string;        // snapshot of requester name
+  userRole: Role;          // snapshot of requester role
+  // Linked entity
+  entityType: "student" | "staff" | "parent" | "user";
+  entityId: string;        // student doc ID, teacher doc ID, etc.
+  // Change details
+  field: ProfileChangeRequestField;
+  fieldLabel: string;      // human-readable field name
+  originalValue: string;   // snapshot at submission time
+  requestedValue: string;  // what user wants it changed to
+  reason: string;
+  // Supporting document
+  supportingDocUrl?: string;
+  supportingDocPath?: string;
+  supportingDocName?: string;
+  // Status lifecycle
+  status: ProfileChangeRequestV2Status;
+  reviewerComment?: string;
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  // Timestamps
+  submittedAt: string;
+  updatedAt: string;
+}

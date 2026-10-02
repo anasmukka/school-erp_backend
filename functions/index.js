@@ -21,9 +21,11 @@
  */
 
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const nodemailer = require("nodemailer");
+const crypto = require("crypto");
 
 initializeApp();
 const db = getFirestore();
@@ -271,6 +273,513 @@ exports.sendAssignmentWhatsApp = onDocumentCreated(
         whatsappError: error.message || "Unknown error",
         whatsappAttemptedAt: new Date().toISOString(),
       });
+    }
+  }
+);
+
+// IMPORTANT: RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET must be set as Firebase
+// function secrets — never hardcoded. Deploy with:
+//   firebase functions:secrets:set RAZORPAY_KEY_SECRET
+//   firebase functions:secrets:set RAZORPAY_WEBHOOK_SECRET
+//
+// Verify they are set: firebase functions:secrets:access RAZORPAY_KEY_SECRET
+
+function getGatewaySecret() {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret) {
+    throw new Error(
+      "RAZORPAY_KEY_SECRET is not configured. " +
+        "Set it via: firebase functions:secrets:set RAZORPAY_KEY_SECRET"
+    );
+  }
+  return secret;
+}
+
+function getWebhookSecret() {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret) {
+    throw new Error(
+      "RAZORPAY_WEBHOOK_SECRET is not configured. " +
+        "Set it via: firebase functions:secrets:set RAZORPAY_WEBHOOK_SECRET"
+    );
+  }
+  return secret;
+}
+
+/**
+ * Authoritative Payment Gateway Capability Discovery
+ * Never exposes secrets. Returns active vs not_configured vs temporarily_unavailable.
+ */
+exports.getPaymentGatewayConfig = onCall(
+  { region: "us-central1" },
+  async (_request) => {
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (!keySecret || !webhookSecret) {
+      return {
+        onlinePaymentsEnabled: false,
+        provider: "none",
+        status: "not_configured",
+        keyId: null,
+        message: "Online fee payments are currently unavailable. Please use the school counter for payment.",
+      };
+    }
+
+    try {
+      const settingsDoc = await db.collection("paymentSettings").doc("global").get();
+      if (settingsDoc.exists) {
+        const settings = settingsDoc.data() || {};
+        if (settings.maintenanceMode === true || settings.onlinePaymentsEnabled === false) {
+          return {
+            onlinePaymentsEnabled: false,
+            provider: "razorpay",
+            status: "temporarily_unavailable",
+            keyId: null,
+            message: settings.maintenanceNotice || "Online payments are currently under maintenance. Please try again later or visit the school counter.",
+          };
+        }
+      }
+    } catch {
+      // Non-blocking fallback
+    }
+
+    return {
+      onlinePaymentsEnabled: true,
+      provider: "razorpay",
+      status: "active",
+      keyId: process.env.RAZORPAY_KEY_ID || null,
+      message: "Online payment is active.",
+    };
+  }
+);
+
+/**
+ * Creates an authorized payment order with a cryptographic server HMAC signature token.
+ */
+exports.createFeePaymentOrder = onCall(
+  { region: "us-central1" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required to initiate payment.");
+    }
+
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    if (!keySecret) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Online fee payments are currently unavailable. Please use the school counter for payment."
+      );
+    }
+
+    const {
+      studentId,
+      studentUid,
+      studentName,
+      grade,
+      structureId,
+      assignmentId,
+      academicSession,
+      installmentIds,
+      installmentLabels,
+      amount,
+    } = request.data || {};
+
+    const numAmount = Number(amount);
+    if (!studentId || !numAmount || numAmount <= 0) {
+      throw new HttpsError("invalid-argument", "Valid student ID and positive amount required.");
+    }
+
+    // Role verification: Student can only create order for themselves
+    const callerUid = request.auth.uid;
+    const userDoc = await db.collection("users").doc(callerUid).get();
+    const userData = userDoc.data() || {};
+    const callerRole = userData.role || "student";
+
+    if (callerRole === "student") {
+      const isSelf = callerUid === studentUid || callerUid === studentId;
+      if (!isSelf) {
+        // Double check against students collection
+        const studentDoc = await db.collection("students").doc(studentId).get();
+        const studentData = studentDoc.data() || {};
+        if (studentData.uid !== callerUid && studentData.studentUid !== callerUid) {
+          throw new HttpsError("permission-denied", "Students can only initiate payments for their own account.");
+        }
+      }
+    } else if (callerRole === "parent") {
+      const linkedUids = userData.linkedStudentUids || [];
+      if (!linkedUids.includes(studentId) && !linkedUids.includes(studentUid)) {
+        throw new HttpsError("permission-denied", "Parents can only initiate payments for linked children.");
+      }
+    }
+
+    const now = new Date();
+    const orderId = `order_onl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+
+    // Cryptographic server HMAC signature
+    const signatureToken = crypto
+      .createHmac("sha256", getGatewaySecret())
+      .update(`${orderId}:${numAmount}:${studentId}`)
+      .digest("hex");
+
+    // Persist Payment Intent
+    await db.collection("paymentIntents").doc(orderId).set({
+      orderId,
+      studentId,
+      studentUid: studentUid || callerUid,
+      studentName: studentName || "",
+      grade: grade || "",
+      structureId: structureId || "",
+      assignmentId: assignmentId || null,
+      academicSession: academicSession || "",
+      installmentIds: installmentIds || [],
+      installmentLabels: installmentLabels || [],
+      amount: numAmount,
+      currency: "INR",
+      status: "pending",
+      signatureToken,
+      createdBy: callerUid,
+      createdAt: now.toISOString(),
+    });
+
+    return {
+      orderId,
+      amount: numAmount,
+      currency: "INR",
+      signatureToken,
+      createdAt: now.toISOString(),
+    };
+  }
+);
+
+/**
+ * Cryptographically verifies payment transaction and idempotently records feePayment and feeLedgerEntry.
+ */
+exports.verifyAndRecordOnlineFeePayment = onCall(
+  { region: "us-central1" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const {
+      orderId,
+      paymentId,
+      signatureToken,
+      razorpaySignature,
+      studentId,
+      studentUid,
+      studentName,
+      grade,
+      structureId,
+      assignmentId,
+      academicSession,
+      termId,
+      termName,
+      installmentId,
+      installmentLabel,
+      amount,
+      paymentMode,
+      payerEmail,
+    } = request.data || {};
+
+    if (!orderId || !paymentId || !studentId) {
+      throw new HttpsError("invalid-argument", "Missing required payment verification parameters.");
+    }
+
+    const numAmount = Number(amount);
+    if (!numAmount || numAmount <= 0) {
+      throw new HttpsError("invalid-argument", "Invalid payment amount.");
+    }
+
+    // Cryptographic Verification: Gateway HMAC-SHA256 (SEC-03)
+    if (!razorpaySignature || typeof razorpaySignature !== "string") {
+      throw new HttpsError("invalid-argument", "Cryptographic gateway signature (razorpaySignature) is required.");
+    }
+
+    const expectedRazorpay = crypto
+      .createHmac("sha256", getGatewaySecret())
+      .update(`${orderId}|${paymentId}`)
+      .digest("hex");
+
+    const expectedBuf = Buffer.from(expectedRazorpay, "utf-8");
+    const receivedBuf = Buffer.from(razorpaySignature, "utf-8");
+
+    let verified = false;
+    if (expectedBuf.length === receivedBuf.length && crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
+      verified = true;
+    }
+
+    if (!verified) {
+      throw new HttpsError("invalid-argument", "Cryptographic payment verification failed: Invalid gateway signature.");
+    }
+
+    // Deterministic Payment Document Reference for database-level idempotency
+    const paymentRef = db.collection("feePayments").doc(paymentId);
+    const ledgerRef = db.collection("feeLedgerEntries").doc(`LEDGER_${paymentId}`);
+    const intentRef = db.collection("paymentIntents").doc(orderId);
+
+    const callerUid = request.auth.uid;
+    const now = new Date();
+    const paidAt = now.toISOString().slice(0, 10);
+    const receiptNo = `RC-ONL-${now.getFullYear()}-${Date.now().toString().slice(-6)}`;
+
+    const result = await db.runTransaction(async (transaction) => {
+      // 1. Check if payment already exists (Idempotency check)
+      const existingPayment = await transaction.get(paymentRef);
+      if (existingPayment.exists) {
+        const data = existingPayment.data();
+        return {
+          success: true,
+          paymentRecordId: existingPayment.id,
+          receiptNo: data.receiptNo || `RC-${existingPayment.id.slice(-6)}`,
+          transactionId: paymentId,
+          paidAt: data.paidAt || paidAt,
+          message: "Payment already verified and credited to ledger (idempotent duplicate request).",
+        };
+      }
+
+      // 2. Fetch payment intent
+      const intentSnap = await transaction.get(intentRef);
+      if (intentSnap.exists) {
+        const intentData = intentSnap.data();
+        if (intentData.status === "completed" && intentData.paymentId !== paymentId) {
+          throw new HttpsError("failed-precondition", "Order intent has already been fulfilled by another payment.");
+        }
+      }
+
+      // 3. Atomically write authoritative feePayments record
+      const paymentData = {
+        id: paymentId,
+        orderId,
+        paymentId,
+        reference: paymentId,
+        studentId,
+        studentUid: studentUid || callerUid,
+        studentName: studentName || "",
+        grade: grade || "",
+        structureId: structureId || "",
+        assignmentId: assignmentId || null,
+        academicSession: academicSession || "",
+        termId: termId || "",
+        termName: termName || "",
+        installmentId: installmentId || "",
+        installmentLabel: installmentLabel || "",
+        amount: numAmount,
+        paymentMode: paymentMode || "online",
+        paidAt,
+        receiptNo,
+        verificationStatus: "verified",
+        verifiedAt: now.toISOString(),
+        recordedBy: callerUid,
+        notes: `Online Gateway Payment verified (Order: ${orderId})`,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      transaction.set(paymentRef, paymentData);
+
+      // 4. Atomically write authoritative feeLedgerEntries record
+      transaction.set(ledgerRef, {
+        studentId,
+        studentUid: studentUid || callerUid,
+        assignmentId: assignmentId || "",
+        sessionId: academicSession || "",
+        type: "payment",
+        description: `Payment for ${termName ? `${termName} - ` : ""}${installmentLabel || "Tuition"} (online) — Receipt: ${receiptNo}`,
+        amount: -numAmount,
+        termId: termId || "",
+        termName: termName || "",
+        installmentId: installmentId || "",
+        installmentLabel: installmentLabel || "",
+        referenceId: paymentId,
+        referenceType: "feePayment",
+        verificationStatus: "verified",
+        recordedBy: callerUid,
+        recordedByName: "Payment Gateway",
+        createdAt: now.toISOString(),
+      });
+
+      // 5. Update payment intent
+      if (intentSnap.exists) {
+        transaction.update(intentRef, {
+          status: "completed",
+          paymentRecordId: paymentId,
+          receiptNo,
+          completedAt: now.toISOString(),
+        });
+      }
+
+      // 6. If assignment exists, update installment status in studentFeeAssignments (and terms)
+      if (assignmentId) {
+        const assignRef = db.collection("studentFeeAssignments").doc(assignmentId);
+        const assignSnap = await transaction.get(assignRef);
+        if (assignSnap.exists) {
+          const assignData = assignSnap.data();
+          const installments = assignData.installments || [];
+          let updated = false;
+          const updatedInsts = installments.map((inst) => {
+            if (inst.id === installmentId || inst.label === installmentLabel) {
+              updated = true;
+              return { ...inst, status: "paid" };
+            }
+            return inst;
+          });
+          const updatePayload = {};
+          if (updated) {
+            updatePayload.installments = updatedInsts;
+            updatePayload.updatedAt = now.toISOString();
+          }
+          if (assignData.terms && Array.isArray(assignData.terms)) {
+            const updatedTerms = assignData.terms.map((t) => ({
+              ...t,
+              installments: (t.installments || []).map((inst) => {
+                if (inst.id === installmentId || inst.label === installmentLabel) {
+                  return { ...inst, status: "paid" };
+                }
+                return inst;
+              }),
+            }));
+            updatePayload.terms = updatedTerms;
+            updatePayload.updatedAt = now.toISOString();
+          }
+          if (Object.keys(updatePayload).length > 0) {
+            transaction.update(assignRef, updatePayload);
+          }
+        }
+      }
+
+      return {
+        success: true,
+        paymentRecordId: paymentId,
+        receiptNo,
+        transactionId: paymentId,
+        paidAt,
+        message: "Payment successfully verified and posted to the official fee ledger.",
+      };
+    });
+
+    // Central Audit Logging
+    try {
+      await db.collection("auditLogs").add({
+        userId: callerUid,
+        userName: studentName || "Online Student",
+        role: "student",
+        action: "create",
+        entity: "fee_payment",
+        entityId: paymentId,
+        details: `Online Fee Payment verified: ₹${numAmount} for ${studentName} (${installmentLabel}) - Receipt: ${result.receiptNo}`,
+        metadata: {
+          orderId,
+          paymentId,
+          amount: numAmount,
+          receiptNo: result.receiptNo,
+          installmentId,
+          assignmentId: assignmentId || null,
+        },
+        timestamp: now.toISOString(),
+      });
+    } catch (e) {
+      console.warn("Could not write audit log:", e);
+    }
+
+    return result;
+  }
+);
+
+/**
+ * Razorpay Webhook Handler: Cryptographically verifies webhooks and records payments idempotently.
+ */
+exports.razorpayWebhook = onRequest(
+  { region: "us-central1" },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).send("Method Not Allowed");
+      return;
+    }
+
+    const signature = req.headers["x-razorpay-signature"];
+    if (!signature) {
+      res.status(400).send("Missing webhook signature");
+      return;
+    }
+
+    try {
+      const rawBody = typeof req.rawBody === "string" ? req.rawBody : JSON.stringify(req.body);
+      const expected = crypto
+        .createHmac("sha256", getWebhookSecret())
+        .update(rawBody)
+        .digest("hex");
+
+      const expectedBuf = Buffer.from(expected, "utf-8");
+      const receivedBuf = Buffer.from(signature, "utf-8");
+      if (expectedBuf.length !== receivedBuf.length || !crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
+        res.status(400).send("Invalid webhook signature");
+        return;
+      }
+
+      const event = req.body?.event;
+      if (event === "payment.captured") {
+        const paymentEntity = req.body?.payload?.payment?.entity;
+        if (paymentEntity) {
+          const paymentId = paymentEntity.id;
+          const orderId = paymentEntity.order_id;
+          const amount = paymentEntity.amount / 100; // Razorpay paisa to INR
+          const notes = paymentEntity.notes || {};
+
+          const paymentRef = db.collection("feePayments").doc(paymentId);
+          const ledgerRef = db.collection("feeLedgerEntries").doc(`LEDGER_${paymentId}`);
+
+          await db.runTransaction(async (t) => {
+            const existing = await t.get(paymentRef);
+            if (existing.exists) return; // Idempotent
+
+            const now = new Date();
+            const receiptNo = `RC-ONL-${now.getFullYear()}-${Date.now().toString().slice(-6)}`;
+
+            t.set(paymentRef, {
+              id: paymentId,
+              orderId: orderId || null,
+              paymentId,
+              reference: paymentId,
+              studentId: notes.studentId || null,
+              studentUid: notes.studentUid || null,
+              assignmentId: notes.assignmentId || null,
+              amount,
+              paymentMode: "online",
+              paidAt: now.toISOString().slice(0, 10),
+              receiptNo,
+              verificationStatus: "verified",
+              verifiedAt: now.toISOString(),
+              recordedBy: "razorpay_webhook",
+              notes: "Razorpay Webhook capture",
+              createdAt: now.toISOString(),
+            });
+
+            if (notes.studentId) {
+              t.set(ledgerRef, {
+                studentId: notes.studentId,
+                studentUid: notes.studentUid || null,
+                assignmentId: notes.assignmentId || "",
+                sessionId: notes.sessionId || "",
+                type: "payment",
+                description: `Online Gateway Payment — Receipt: ${receiptNo}`,
+                amount: -amount,
+                referenceId: paymentId,
+                referenceType: "feePayment",
+                verificationStatus: "verified",
+                recordedBy: "razorpay_webhook",
+                recordedByName: "Razorpay Gateway",
+                createdAt: now.toISOString(),
+              });
+            }
+          });
+        }
+      }
+
+      res.status(200).json({ status: "ok" });
+    } catch (err) {
+      console.error("Webhook processing error:", err);
+      res.status(500).send("Webhook handler error");
     }
   }
 );

@@ -13,6 +13,7 @@ import {
   limit,
   writeBatch,
   increment,
+  onSnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
@@ -37,6 +38,7 @@ export const DEFAULT_FINE_RULES: LibraryFineRule = {
   standardDurationDaysStaff: 30,
   maxBorrowLimitStudent: 3,
   maxBorrowLimitStaff: 5,
+  reminderDaysBeforeDue: 3,
 };
 
 /**
@@ -630,5 +632,223 @@ export async function getLibraryStats(): Promise<{
     overdueCount,
     totalFinesCollected,
     totalFinesPending,
+  };
+}
+
+// ============================================================
+// STUDENT PORTAL LIBRARY HELPERS
+// ============================================================
+
+export interface StudentLibrarySummary {
+  borrowedCount: number;
+  dueSoonCount: number;
+  overdueCount: number;
+  historyCount: number;
+  totalPendingFine: number;
+}
+
+/**
+ * Resolves the authenticated student's library member identifiers (Auth UID, studentDocId, studentUid).
+ * Prevents IDOR by resolving strictly from the authenticated account.
+ */
+export async function resolveStudentLibraryIdentifiers(
+  authUid: string,
+  email?: string
+): Promise<{ primaryStudentId: string; allIdentifiers: string[]; studentData?: any }> {
+  if (!db) {
+    return { primaryStudentId: authUid, allIdentifiers: [authUid] };
+  }
+
+  const ids = new Set<string>([authUid]);
+  let resolvedStudent: any = null;
+
+  try {
+    // 1. Direct lookup in students collection by doc ID == authUid
+    const directDoc = await getDoc(doc(db, "students", authUid));
+    if (directDoc.exists()) {
+      resolvedStudent = { id: directDoc.id, ...directDoc.data() };
+      ids.add(directDoc.id);
+      if (resolvedStudent.studentUid) ids.add(resolvedStudent.studentUid);
+      if (resolvedStudent.uid) ids.add(resolvedStudent.uid);
+      if (resolvedStudent.admissionNo) ids.add(resolvedStudent.admissionNo);
+    }
+
+    // 2. Query students collection by uid == authUid
+    if (!resolvedStudent) {
+      const qUid = query(collection(db, "students"), where("uid", "==", authUid), limit(1));
+      const snapUid = await getDocs(qUid);
+      if (!snapUid.empty) {
+        const d = snapUid.docs[0];
+        resolvedStudent = { id: d.id, ...d.data() };
+        ids.add(d.id);
+        if (resolvedStudent.studentUid) ids.add(resolvedStudent.studentUid);
+        if (resolvedStudent.uid) ids.add(resolvedStudent.uid);
+      }
+    }
+
+    // 3. Query students collection by authUid == authUid
+    if (!resolvedStudent) {
+      const qAuth = query(collection(db, "students"), where("authUid", "==", authUid), limit(1));
+      const snapAuth = await getDocs(qAuth);
+      if (!snapAuth.empty) {
+        const d = snapAuth.docs[0];
+        resolvedStudent = { id: d.id, ...d.data() };
+        ids.add(d.id);
+        if (resolvedStudent.studentUid) ids.add(resolvedStudent.studentUid);
+      }
+    }
+
+    // 4. Query students collection by email
+    if (!resolvedStudent && email) {
+      const qEmail = query(collection(db, "students"), where("email", "==", email), limit(1));
+      const snapEmail = await getDocs(qEmail);
+      if (!snapEmail.empty) {
+        const d = snapEmail.docs[0];
+        resolvedStudent = { id: d.id, ...d.data() };
+        ids.add(d.id);
+        if (resolvedStudent.studentUid) ids.add(resolvedStudent.studentUid);
+      }
+    }
+
+    // 5. Check user document for studentUid / studentDocId links
+    const userSnap = await getDoc(doc(db, "users", authUid));
+    if (userSnap.exists()) {
+      const uData = userSnap.data();
+      if (uData.studentUid) ids.add(uData.studentUid);
+      if (uData.studentDocId) ids.add(uData.studentDocId);
+    }
+  } catch (err) {
+    console.error("Error resolving student library identifiers:", err);
+  }
+
+  const allIdentifiers = Array.from(ids).filter(Boolean);
+  const primaryStudentId = resolvedStudent?.id || resolvedStudent?.studentUid || authUid;
+
+  return { primaryStudentId, allIdentifiers, studentData: resolvedStudent };
+}
+
+/**
+ * Subscribes to real-time library transactions for a student.
+ * Reflects immediately when a librarian issues, returns, or renews a book.
+ */
+export function subscribeToStudentLibraryTransactions(
+  identifiers: string[],
+  onData: (transactions: LibraryTransaction[]) => void,
+  onError?: (err: Error) => void
+): () => void {
+  if (!db || identifiers.length === 0) {
+    onData([]);
+    return () => {};
+  }
+
+  // Firestore 'in' query supports up to 10 values
+  const safeIds = identifiers.slice(0, 10);
+  const q = query(
+    collection(db, "libraryTransactions"),
+    where("memberId", "in", safeIds)
+  );
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const txs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as LibraryTransaction));
+      // Sort newest issue first
+      txs.sort((a, b) => (b.issueDate || "").localeCompare(a.issueDate || ""));
+      onData(txs);
+    },
+    (err) => {
+      console.error("Failed to subscribe to student library transactions:", err);
+      onError?.(err);
+    }
+  );
+}
+
+/**
+ * Loads book catalog records for a set of transaction bookIds.
+ * Provides author, ISBN, category, coverImageUrl, and shelf location.
+ */
+export async function getBooksMapForTransactions(
+  bookIds: string[]
+): Promise<Record<string, LibraryBook>> {
+  if (!db || bookIds.length === 0) return {};
+  const uniqueIds = Array.from(new Set(bookIds.filter(Boolean)));
+  const bookMap: Record<string, LibraryBook> = {};
+
+  await Promise.all(
+    uniqueIds.map(async (bId) => {
+      try {
+        const snap = await getDoc(doc(db, "libraryBooks", bId));
+        if (snap.exists()) {
+          bookMap[bId] = { id: snap.id, ...snap.data() } as LibraryBook;
+        }
+      } catch (err) {
+        console.error(`Failed to load book ${bId}:`, err);
+      }
+    })
+  );
+
+  return bookMap;
+}
+
+/**
+ * Calculates days difference between due date and current date (or specified date).
+ * Positive = days remaining.
+ * Zero = due today.
+ * Negative = days overdue.
+ */
+export function getLoanDaysDiff(
+  dueDateStr: string,
+  asOfDateStr: string = new Date().toISOString().slice(0, 10)
+): number {
+  if (!dueDateStr) return 0;
+  const due = new Date(dueDateStr);
+  const asOf = new Date(asOfDateStr);
+  const diffTime = due.getTime() - asOf.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Calculates summary metrics for the student's library activity.
+ * Ideal for both the Student Library page and Dashboard widget.
+ */
+export function calculateStudentLibrarySummary(
+  transactions: LibraryTransaction[],
+  rules: LibraryFineRule = DEFAULT_FINE_RULES
+): StudentLibrarySummary {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const reminderThreshold = rules.reminderDaysBeforeDue || 3;
+
+  let borrowedCount = 0;
+  let dueSoonCount = 0;
+  let overdueCount = 0;
+  let historyCount = 0;
+  let totalPendingFine = 0;
+
+  for (const tx of transactions) {
+    if (tx.status === "returned" || tx.status === "lost") {
+      historyCount++;
+      if (tx.finePaidStatus === "unpaid" && tx.fineAmount > 0) {
+        totalPendingFine += tx.fineAmount;
+      }
+    } else {
+      // Active loan ("issued" or "overdue")
+      borrowedCount++;
+      const daysDiff = getLoanDaysDiff(tx.dueDate, todayStr);
+      if (daysDiff < 0 || tx.status === "overdue") {
+        overdueCount++;
+        const { fineAmount } = calculateOverdueFine(tx.dueDate, todayStr, rules);
+        totalPendingFine += Math.max(fineAmount, tx.fineAmount || 0);
+      } else if (daysDiff <= reminderThreshold) {
+        dueSoonCount++;
+      }
+    }
+  }
+
+  return {
+    borrowedCount,
+    dueSoonCount,
+    overdueCount,
+    historyCount,
+    totalPendingFine,
   };
 }

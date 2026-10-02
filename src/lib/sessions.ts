@@ -123,6 +123,35 @@ export async function getActiveAcademicSession(): Promise<AcademicSession> {
 }
 
 /**
+ * Retrieves a canonical session by its ID or Name.
+ * Validates that it exists in the canonical academicSessions collection.
+ */
+export async function getAcademicSessionById(
+  sessionIdOrName: string
+): Promise<AcademicSession | null> {
+  if (!sessionIdOrName || !sessionIdOrName.trim()) return null;
+  try {
+    const cleanId = sessionIdOrName.trim();
+    // 1. Direct doc lookup by ID
+    const snap = await getDoc(doc(db, "academicSessions", cleanId));
+    if (snap.exists()) {
+      return { id: snap.id, ...snap.data() } as AcademicSession;
+    }
+    // 2. Lookup by name if doc ID differs
+    const q = query(collection(db, "academicSessions"), where("name", "==", cleanId));
+    const querySnap = await getDocs(q);
+    if (!querySnap.empty) {
+      const d = querySnap.docs[0];
+      return { id: d.id, ...d.data() } as AcademicSession;
+    }
+    return null;
+  } catch (err) {
+    console.error(`Failed to get academic session ${sessionIdOrName}:`, err);
+    return null;
+  }
+}
+
+/**
  * Create a new planned academic session (never active by default).
  */
 export async function createAcademicSession(input: {

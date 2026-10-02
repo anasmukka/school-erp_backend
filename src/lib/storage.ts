@@ -10,7 +10,12 @@ export interface UploadedFileResult {
 
 /**
  * Uploads a document to Firebase Storage under a designated folder path.
- * Typically used for printing order attachments.
+ * Used as a legacy/direct Firebase Storage path for printing order attachments
+ * when called directly (not via objectStorage.uploadObject which handles routing).
+ *
+ * NOTE: This function is the Firebase Storage leaf-implementation only.
+ * It does NOT perform R2 routing. R2 routing is handled by objectStorage.ts.
+ * Do NOT add a try/catch Firebase fallback in objectStorage.ts that calls this.
  */
 export async function uploadPrintingDocument(
   file: File,
@@ -18,7 +23,11 @@ export async function uploadPrintingDocument(
   onProgress?: (progressPercent: number) => void
 ): Promise<UploadedFileResult> {
   if (!storage) {
-    throw new Error("Firebase Storage is not initialized. Check your Firebase configuration.");
+    throw new Error(
+      "Firebase Storage is not initialized. " +
+        "Check your Firebase configuration. " +
+        "If you intended to use R2, ensure VITE_WORKER_URL is set."
+    );
   }
 
   // Sanitize filename to avoid weird URI characters
@@ -44,7 +53,7 @@ export async function uploadPrintingDocument(
         }
       },
       (error) => {
-        console.error("Storage upload failed:", error);
+        console.error("Firebase Storage upload failed:", error);
         reject(error);
       },
       async () => {

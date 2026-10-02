@@ -102,7 +102,7 @@
   --sidebar-ring: 217 91% 60%;
 
   --app-font-sans: "DM Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --app-font-brand: "Cinzel", "DM Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --app-font-brand: "DM Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --radius: 0.875rem;
 
   --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);

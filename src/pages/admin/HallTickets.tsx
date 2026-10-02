@@ -21,6 +21,7 @@ import type {
   HallTicketStudentEligibility,
   Student,
   Enrollment,
+  StudentFeeAssignment,
 } from "@/lib/types";
 import {
   getHallTicketGlobalSettings,
@@ -30,6 +31,7 @@ import {
   deleteHallTicketRule,
   listHallTicketBypasses,
   requestHallTicketBypass,
+  grantDirectHallTicketBypass,
   reviewHallTicketBypass,
   evaluateStudentExamEligibility,
   generateHallTicketForStudent,
@@ -37,6 +39,7 @@ import {
   revokeHallTicket,
 } from "@/lib/hallTicketEngine";
 import { downloadHallTicketPdf, downloadBulkHallTicketsPdf } from "@/lib/generateHallTicketPdf";
+import { SearchInput } from "@/components/ui/SearchInput";
 import {
   getActiveStructureForGrade,
   AcademicStructure,
@@ -79,6 +82,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  Clock,
   Download,
   Filter,
   Layers,
@@ -122,6 +126,7 @@ export default function HallTickets() {
   const [students, setStudents] = useState<Student[]>([]);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [feeStructures, setFeeStructures] = useState<FeeStructure[]>([]);
+  const [feeAssignments, setFeeAssignments] = useState<StudentFeeAssignment[]>([]);
   const [feePayments, setFeePayments] = useState<FeePayment[]>([]);
   const [bypasses, setBypasses] = useState<HallTicketBypass[]>([]);
   const [rules, setRules] = useState<HallTicketRule[]>([]);
@@ -135,7 +140,7 @@ export default function HallTickets() {
   } | null>(null);
 
   // Student filter & search
-  const [statusFilter, setStatusFilter] = useState<"all" | "eligible" | "blocked" | "bypass_approved" | "generated">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "eligible" | "pending_bypass" | "blocked" | "bypass_approved" | "generated">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Modals
@@ -143,10 +148,11 @@ export default function HallTickets() {
   const [editingRule, setEditingRule] = useState<Partial<HallTicketRule> | null>(null);
   const [savingRule, setSavingRule] = useState(false);
 
-  const [bypassModalOpen, setBypassModalOpen] = useState(false);
-  const [bypassStudent, setBypassStudent] = useState<HallTicketStudentEligibility | null>(null);
-  const [bypassReason, setBypassReason] = useState("");
-  const [savingBypass, setSavingBypass] = useState(false);
+  // Administrative Override Modal State
+  const [overrideModalOpen, setOverrideModalOpen] = useState(false);
+  const [overrideStudent, setOverrideStudent] = useState<HallTicketStudentEligibility | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [savingOverride, setSavingOverride] = useState(false);
 
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [reviewingBypass, setReviewingBypass] = useState<HallTicketBypass | null>(null);
@@ -155,6 +161,8 @@ export default function HallTickets() {
 
   const [bulkGenerating, setBulkGenerating] = useState(false);
   const [singleGeneratingId, setSingleGeneratingId] = useState<string | null>(null);
+  const [downloadingBulk, setDownloadingBulk] = useState(false);
+  const [downloadingSingleId, setDownloadingSingleId] = useState<string | null>(null);
 
   // 1. Load Global Settings
   const loadSettings = async () => {
@@ -234,8 +242,9 @@ export default function HallTickets() {
       const [
         studentsSnap,
         enrollmentsSnap,
-        structuresSnap,
-        paymentsSnap,
+        feeStructuresSnap,
+        feePaymentsSnap,
+        assignmentsSnap,
         bypassesList,
         rulesList,
         ticketsSnap,
@@ -251,6 +260,7 @@ export default function HallTickets() {
         ),
         getDocs(query(collection(db, "feeStructures"), where("grade", "==", schedGrade))),
         getDocs(query(collection(db, "feePayments"), where("grade", "==", schedGrade))),
+        getDocs(query(collection(db, "studentFeeAssignments"), where("grade", "==", schedGrade), where("status", "==", "active"))),
         listHallTicketBypasses({ sessionId: targetSession, definedExamId: currentSchedule.definedExamId }),
         listHallTicketRules(targetSession),
         getDocs(query(collection(db, "hallTickets"), where("scheduleId", "==", currentSchedule.id))),
@@ -259,13 +269,15 @@ export default function HallTickets() {
 
       const stuList = studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Student));
       const enList = enrollmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Enrollment));
-      const structList = structuresSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeStructure));
-      const payList = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeePayment));
+      const structList = feeStructuresSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeStructure));
+      const payList = feePaymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as FeePayment));
+      const assignList = assignmentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentFeeAssignment));
       const tickList = ticketsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as HallTicket));
 
       setStudents(stuList);
       setEnrollments(enList);
       setFeeStructures(structList);
+      setFeeAssignments(assignList);
       setFeePayments(payList);
       setBypasses(bypassesList);
       setRules(rulesList);
@@ -326,33 +338,43 @@ export default function HallTickets() {
       const payments = feePayments.filter(
         (p) => p.studentId === stu.id || (stu.uid && p.studentId === stu.uid)
       );
-      // Find approved bypass
-      const approvedBypass =
-        bypasses.find(
-          (b) =>
-            b.studentId === stu.id &&
-            b.definedExamId === currentSchedule.definedExamId &&
-            b.status === "approved"
-        ) || null;
+      // Find bypasses for student & this exam
+      const studentBypasses = bypasses.filter(
+        (b) =>
+          (b.studentId === stu.id || (stu.uid && b.studentUid === stu.uid)) &&
+          b.definedExamId === currentSchedule.definedExamId
+      );
+      studentBypasses.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      const approvedBypass = studentBypasses.find((b) => b.status === "approved") || null;
+      const pendingBypass = studentBypasses.find((b) => b.status === "pending") || null;
+
       // Find generated ticket
       const existingTicket =
         generatedTickets.find((t) => t.studentId === stu.id && t.status !== "revoked") || null;
+
+      // Find individualized fee assignment (SEC-08)
+      const studentAssignment = feeAssignments.find(
+        (a) => a.studentId === stu.id || a.studentUid === stu.id || (stu.uid && (a.studentUid === stu.uid || a.studentId === stu.uid))
+      ) || null;
 
       return evaluateStudentExamEligibility({
         student: stu,
         enrollment: en,
         schedule: currentSchedule,
         feeStructure: matchedFeeStructure,
+        studentFeeAssignment: studentAssignment,
         studentPayments: payments,
         globalSettings,
         examRule: currentExamRule,
         approvedBypass,
+        pendingBypass,
         existingHallTicket: existingTicket,
       });
     });
   }, [
     students,
     enrollments,
+    feeAssignments,
     feePayments,
     bypasses,
     generatedTickets,
@@ -366,10 +388,11 @@ export default function HallTickets() {
   const stats = useMemo(() => {
     const total = studentEvaluations.length;
     const eligible = studentEvaluations.filter((s) => s.status === "eligible").length;
-    const blocked = studentEvaluations.filter((s) => s.status === "blocked").length;
+    const blocked = studentEvaluations.filter((s) => s.status === "blocked" && !s.pendingBypass).length;
+    const bypassPending = studentEvaluations.filter((s) => !!s.pendingBypass).length;
     const bypassApproved = studentEvaluations.filter((s) => s.status === "bypass_approved").length;
     const generated = studentEvaluations.filter((s) => s.existingHallTicket).length;
-    return { total, eligible, blocked, bypassApproved, generated };
+    return { total, eligible, blocked, bypassPending, bypassApproved, generated };
   }, [studentEvaluations]);
 
   // Filtered student list for table
@@ -377,7 +400,8 @@ export default function HallTickets() {
     return studentEvaluations.filter((item) => {
       // Status filter
       if (statusFilter === "eligible" && item.status !== "eligible") return false;
-      if (statusFilter === "blocked" && item.status !== "blocked") return false;
+      if (statusFilter === "pending_bypass" && !item.pendingBypass) return false;
+      if (statusFilter === "blocked" && (item.status !== "blocked" || item.pendingBypass)) return false;
       if (statusFilter === "bypass_approved" && item.status !== "bypass_approved") return false;
       if (statusFilter === "generated" && !item.existingHallTicket) return false;
 
@@ -474,7 +498,7 @@ export default function HallTickets() {
     }
   };
 
-  const handleDownloadBulk = () => {
+  const handleDownloadBulk = async () => {
     if (!currentSchedule) return;
     const tickets = studentEvaluations
       .map((s) => s.existingHallTicket)
@@ -489,11 +513,37 @@ export default function HallTickets() {
       return;
     }
 
-    downloadBulkHallTicketsPdf(tickets, currentSchedule.examType, currentSchedule.grade);
-    toast({
-      title: "Downloading Hall Tickets",
-      description: `Downloaded ${tickets.length} hall tickets in a single print-ready PDF document.`,
-    });
+    setDownloadingBulk(true);
+    try {
+      await downloadBulkHallTicketsPdf(tickets, currentSchedule.examType, currentSchedule.grade);
+      toast({
+        title: "Downloading Hall Tickets",
+        description: `Downloaded ${tickets.length} hall tickets in a single print-ready PDF document.`,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Download Failed",
+        description: e.message || "Failed to generate bulk PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingBulk(false);
+    }
+  };
+
+  const handleDownloadSingle = async (ticket: HallTicket) => {
+    setDownloadingSingleId(ticket.id);
+    try {
+      await downloadHallTicketPdf(ticket);
+    } catch (e: any) {
+      toast({
+        title: "Download Failed",
+        description: e.message || "Failed to generate PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingSingleId(null);
+    }
   };
 
   const handleRevoke = async (ticket: HallTicket) => {
@@ -517,58 +567,62 @@ export default function HallTickets() {
     }
   };
 
-  const handleOpenBypassRequest = (item: HallTicketStudentEligibility) => {
-    setBypassStudent(item);
-    setBypassReason("");
-    setBypassModalOpen(true);
+  const handleOpenDirectOverride = (item: HallTicketStudentEligibility) => {
+    setOverrideStudent(item);
+    setOverrideReason("");
+    setOverrideModalOpen(true);
   };
 
-  const handleSubmitBypassRequest = async () => {
-    if (!bypassStudent || !currentSchedule || !appUser) return;
-    if (!bypassReason.trim()) {
-      toast({ title: "Reason Required", description: "Please explain the reason for the bypass exception.", variant: "destructive" });
+  const handleSaveDirectOverride = async () => {
+    if (!overrideStudent || !currentSchedule || !appUser) return;
+    if (!overrideReason.trim()) {
+      toast({
+        title: "Reason Required",
+        description: "Please specify an administrative justification for the override.",
+        variant: "destructive",
+      });
       return;
     }
 
-    setSavingBypass(true);
+    setSavingOverride(true);
     try {
-      await requestHallTicketBypass(
+      await grantDirectHallTicketBypass(
         {
-          studentId: bypassStudent.studentId,
-          studentUid: bypassStudent.studentUid,
-          studentName: bypassStudent.studentName,
-          admissionNo: bypassStudent.admissionNo,
-          rollNo: bypassStudent.rollNo,
-          grade: bypassStudent.grade,
-          sectionId: bypassStudent.sectionId,
-          sectionName: bypassStudent.sectionName,
+          studentId: overrideStudent.studentId,
+          studentUid: overrideStudent.studentUid,
+          studentName: overrideStudent.studentName,
+          admissionNo: overrideStudent.admissionNo,
+          rollNo: overrideStudent.rollNo,
+          grade: overrideStudent.grade,
+          sectionId: overrideStudent.sectionId,
+          sectionName: overrideStudent.sectionName,
           sessionId: currentSchedule.sessionId,
           academicYear: currentSchedule.academicYear,
-          definedExamId: currentSchedule.definedExamId,
+          definedExamId: currentSchedule.definedExamId || currentSchedule.id || "",
           examName: currentSchedule.examType,
           scheduleId: currentSchedule.id,
-          reason: bypassReason.trim(),
-          feeShortfallAmount: bypassStudent.feeDetails.outstanding,
-          feeStatusSummary: bypassStudent.reason,
+          reason: overrideReason.trim(),
+          feeShortfallAmount: overrideStudent.feeDetails.outstanding,
+          feeStatusSummary: overrideStudent.reason,
         },
         { uid: appUser.id, name: appUser.name, role: appUser.role }
       );
 
       toast({
-        title: "Bypass Requested",
-        description: `Bypass request for ${bypassStudent.studentName} submitted for Principal/Admin approval.`,
+        title: "Administrative Override Granted",
+        description: `Bypass authorized for ${overrideStudent.studentName}. Hall ticket is now eligible for generation.`,
       });
-      setBypassModalOpen(false);
-      setBypassStudent(null);
+      setOverrideModalOpen(false);
+      setOverrideStudent(null);
       await loadScheduleData();
     } catch (e: any) {
       toast({
-        title: "Request Failed",
-        description: e.message || "Failed to submit bypass request.",
+        title: "Override Failed",
+        description: e.message || "Failed to grant override.",
         variant: "destructive",
       });
     } finally {
-      setSavingBypass(false);
+      setSavingOverride(false);
     }
   };
 
@@ -647,6 +701,7 @@ export default function HallTickets() {
           minimumPaymentPercentage: Number(editingRule.minimumPaymentPercentage) || 50,
           minimumPaymentAmount: Number(editingRule.minimumPaymentAmount) || 0,
           notes: editingRule.notes || "",
+          updatedBy: appUser.name || appUser.id,
         },
         { uid: appUser.id, name: appUser.name, role: appUser.role }
       );
@@ -795,11 +850,11 @@ export default function HallTickets() {
 
       {/* 3. Stat Cards */}
       {currentSchedule && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <div className="rounded-2xl border border-border/60 bg-white p-4 shadow-xs">
             <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold">
               <Users size={15} className="text-blue-500" />
-              <span>Enrolled Students</span>
+              <span>Enrolled</span>
             </div>
             <p className="mt-2 text-2xl font-bold text-slate-900">{stats.total}</p>
             <p className="text-[11px] text-muted-foreground">Grade {currentSchedule.grade}</p>
@@ -820,22 +875,35 @@ export default function HallTickets() {
               <span>Fee Blocked</span>
             </div>
             <p className="mt-2 text-2xl font-bold text-rose-800">{stats.blocked}</p>
-            <p className="text-[11px] text-rose-600">Installment below threshold</p>
+            <p className="text-[11px] text-rose-600">Installment dues pending</p>
           </div>
 
-          <div className="rounded-2xl border border-amber-200/60 bg-amber-50/40 p-4 shadow-xs">
-            <div className="flex items-center gap-2 text-amber-700 text-xs font-semibold">
-              <ShieldAlert size={15} />
+          <div className={`rounded-2xl border p-4 shadow-xs ${
+            stats.bypassPending > 0
+              ? "border-amber-300 bg-amber-50/80 ring-1 ring-amber-300"
+              : "border-amber-200/60 bg-amber-50/40"
+          }`}>
+            <div className="flex items-center gap-2 text-amber-800 text-xs font-semibold">
+              <Clock size={15} className="text-amber-600" />
+              <span>Pending Requests</span>
+            </div>
+            <p className="mt-2 text-2xl font-bold text-amber-950">{stats.bypassPending}</p>
+            <p className="text-[11px] text-amber-700">Awaiting your approval</p>
+          </div>
+
+          <div className="rounded-2xl border border-emerald-200/60 bg-emerald-50/40 p-4 shadow-xs">
+            <div className="flex items-center gap-2 text-emerald-700 text-xs font-semibold">
+              <ShieldCheck size={15} />
               <span>Bypass Approved</span>
             </div>
-            <p className="mt-2 text-2xl font-bold text-amber-800">{stats.bypassApproved}</p>
-            <p className="text-[11px] text-amber-600">Principal authorized</p>
+            <p className="mt-2 text-2xl font-bold text-emerald-800">{stats.bypassApproved}</p>
+            <p className="text-[11px] text-emerald-600">Principal authorized</p>
           </div>
 
           <div className="rounded-2xl border border-indigo-200/60 bg-indigo-50/40 p-4 shadow-xs">
             <div className="flex items-center gap-2 text-indigo-700 text-xs font-semibold">
               <Sparkles size={15} />
-              <span>Hall Tickets Ready</span>
+              <span>Tickets Ready</span>
             </div>
             <p className="mt-2 text-2xl font-bold text-indigo-800">{stats.generated}</p>
             <p className="text-[11px] text-indigo-600">Published & printable</p>
@@ -863,6 +931,11 @@ export default function HallTickets() {
           >
             <ShieldCheck size={14} className="mr-1.5" />
             Bypasses & Exceptions ({bypasses.length})
+            {stats.bypassPending > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-500 text-white px-1.5 py-0.2 text-[10px] font-bold">
+                {stats.bypassPending} pending
+              </span>
+            )}
           </Button>
           <Button
             variant={activeTab === "rules" ? "default" : "ghost"}
@@ -882,9 +955,9 @@ export default function HallTickets() {
               size="sm"
               className="h-8 gap-1.5 text-xs font-semibold"
               onClick={handleDownloadBulk}
-              disabled={stats.generated === 0}
+              disabled={downloadingBulk || stats.generated === 0}
             >
-              <Download size={14} />
+              {downloadingBulk ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               <span>Download Generated Batch ({stats.generated})</span>
             </Button>
             <Button
@@ -960,6 +1033,18 @@ export default function HallTickets() {
                 Eligible ({stats.eligible})
               </Button>
               <Button
+                variant={statusFilter === "pending_bypass" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("pending_bypass")}
+                className={`h-7 text-xs ${
+                  stats.bypassPending > 0
+                    ? "border-amber-400 bg-amber-100 text-amber-900 font-bold"
+                    : "border-amber-300 text-amber-700 bg-amber-50/50"
+                }`}
+              >
+                Pending Requests ({stats.bypassPending})
+              </Button>
+              <Button
                 variant={statusFilter === "blocked" ? "default" : "outline"}
                 size="sm"
                 onClick={() => setStatusFilter("blocked")}
@@ -971,7 +1056,7 @@ export default function HallTickets() {
                 variant={statusFilter === "bypass_approved" ? "default" : "outline"}
                 size="sm"
                 onClick={() => setStatusFilter("bypass_approved")}
-                className="h-7 text-xs border-amber-300 text-amber-700 bg-amber-50/50"
+                className="h-7 text-xs border-emerald-300 text-emerald-700 bg-emerald-50/50"
               >
                 Bypass Approved ({stats.bypassApproved})
               </Button>
@@ -985,13 +1070,13 @@ export default function HallTickets() {
               </Button>
             </div>
 
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
+            <div className="w-full sm:w-64">
+              <SearchInput
                 placeholder="Search student or roll no..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-8 text-xs bg-white"
+                onChange={setSearchQuery}
+                className="h-8 text-xs bg-white"
+                showShortcutHint={false}
               />
             </div>
           </div>
@@ -1057,9 +1142,14 @@ export default function HallTickets() {
                             Eligible
                           </span>
                         ) : item.status === "bypass_approved" ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                            <ShieldAlert size={12} />
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                            <ShieldCheck size={12} className="text-emerald-700" />
                             Bypass Approved
+                          </span>
+                        ) : item.pendingBypass ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 border border-amber-300">
+                            <Clock size={12} />
+                            Request Received
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-800">
@@ -1095,10 +1185,15 @@ export default function HallTickets() {
                                 variant="outline"
                                 size="sm"
                                 className="h-7 px-2 text-xs gap-1"
-                                onClick={() => downloadHallTicketPdf(item.existingHallTicket!)}
+                                onClick={() => handleDownloadSingle(item.existingHallTicket!)}
+                                disabled={downloadingSingleId === item.existingHallTicket.id}
                                 title="Download Admit Card PDF"
                               >
-                                <Download size={13} />
+                                {downloadingSingleId === item.existingHallTicket.id ? (
+                                  <Loader2 size={13} className="animate-spin" />
+                                ) : (
+                                  <Download size={13} />
+                                )}
                                 <span>PDF</span>
                               </Button>
                               <Button
@@ -1125,16 +1220,30 @@ export default function HallTickets() {
                               )}
                               <span>Generate</span>
                             </Button>
-                          ) : (
+                          ) : item.pendingBypass ? (
                             <Button
-                              variant="outline"
                               size="sm"
-                              className="h-7 px-2 text-xs font-semibold text-amber-700 border-amber-300 hover:bg-amber-50"
-                              onClick={() => handleOpenBypassRequest(item)}
+                              className="h-7 px-2.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
+                              onClick={() => handleOpenReview(item.pendingBypass!)}
+                              title="Review student's bypass request for approval"
                             >
-                              <ShieldCheck size={13} className="mr-1" />
-                              <span>Request Bypass</span>
+                              <ShieldAlert size={13} className="mr-1" />
+                              <span>Review Request</span>
                             </Button>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[11px] text-muted-foreground italic">No request</span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-[11px] text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                onClick={() => handleOpenDirectOverride(item)}
+                                title="Grant direct administrative bypass override"
+                              >
+                                <ShieldCheck size={12} className="mr-1 text-slate-400" />
+                                <span>Override</span>
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </TableCell>
@@ -1525,43 +1634,47 @@ export default function HallTickets() {
         </DialogContent>
       </Dialog>
 
-      {/* 9. MODAL: Request Bypass Dialog */}
-      <Dialog open={bypassModalOpen} onOpenChange={setBypassModalOpen}>
+      {/* 9. MODAL: Grant Administrative Override Dialog */}
+      <Dialog open={overrideModalOpen} onOpenChange={setOverrideModalOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-base font-bold">
-              Request Hall Ticket Bypass
+              Grant Administrative Override
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Authorize an exception allowing this blocked student to receive an official examination hall ticket.
+              Directly authorize examination clearance for this student as an administrator without waiting for a student request.
             </DialogDescription>
           </DialogHeader>
 
-          {bypassStudent && (
+          {overrideStudent && (
             <div className="space-y-3 py-2 text-xs">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1.5">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Candidate</span>
-                  <span className="font-bold text-slate-900">{bypassStudent.studentName}</span>
+                  <span className="font-bold text-slate-900">{overrideStudent.studentName}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Class & Exam</span>
                   <span className="font-semibold text-slate-800">
-                    Grade {bypassStudent.grade} · {currentSchedule?.examType}
+                    Grade {overrideStudent.grade} · {currentSchedule?.examType}
                   </span>
                 </div>
                 <div className="flex justify-between">
+                  <span className="text-muted-foreground">Outstanding Dues</span>
+                  <span className="text-rose-700 font-semibold">₹{(overrideStudent.feeDetails.outstanding || 0).toLocaleString("en-IN")}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-muted-foreground">Current Reason</span>
-                  <span className="text-rose-700 font-semibold">{bypassStudent.reason}</span>
+                  <span className="text-rose-700 font-medium">{overrideStudent.reason}</span>
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Justification / Reason for Bypass *</Label>
+                <Label className="text-xs font-semibold">Administrative Reason / Justification *</Label>
                 <Textarea
-                  placeholder="e.g. Management financial hardship concession, parent signed installment undertaking, medical emergency..."
-                  value={bypassReason}
-                  onChange={(e) => setBypassReason(e.target.value)}
+                  placeholder="e.g. Approved per Principal order, fee installment plan agreed with guardian, medical hardship exemption..."
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
                   className="text-xs min-h-[90px]"
                 />
               </div>
@@ -1569,17 +1682,17 @@ export default function HallTickets() {
           )}
 
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setBypassModalOpen(false)}>
+            <Button variant="outline" size="sm" onClick={() => setOverrideModalOpen(false)}>
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={handleSubmitBypassRequest}
-              disabled={savingBypass}
+              onClick={handleSaveDirectOverride}
+              disabled={savingOverride}
               className="bg-amber-600 hover:bg-amber-700 text-white"
             >
-              {savingBypass ? <Loader2 className="animate-spin mr-1" size={14} /> : null}
-              Submit Bypass Request
+              {savingOverride ? <Loader2 className="animate-spin mr-1" size={14} /> : null}
+              Authorize & Clear Student
             </Button>
           </DialogFooter>
         </DialogContent>
