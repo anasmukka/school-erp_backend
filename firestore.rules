@@ -150,7 +150,16 @@ service cloud.firestore {
     // ==========================================
     match /users/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isStaff());
-      allow create: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data);
+      allow create: if (
+        (isAdmin() && hasNoSensitiveAuthFields(request.resource.data)) ||
+        (
+          !exists(/databases/$(database)/documents/system/setup) &&
+          isSignedIn() &&
+          request.auth.uid == userId &&
+          request.resource.data.role == 'admin' &&
+          hasNoSensitiveAuthFields(request.resource.data)
+        )
+      );
       allow update: if isAdmin() && hasNoSensitiveAuthFields(request.resource.data) && (
         // Prevent mutating immutable authUid link
         !('authUid' in request.resource.data) ||
@@ -509,6 +518,18 @@ service cloud.firestore {
     match /rfidCards/{cardId} {
       allow read: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher', 'operations']);
       allow write: if isAdmin();
+    }
+
+    // ==========================================
+    // 11. SYSTEM SETTINGS & INITIAL BOOTSTRAP
+    // ==========================================
+    match /system/{docId} {
+      allow read: if true;
+      allow create: if (
+        (!exists(/databases/$(database)/documents/system/setup) && isSignedIn()) ||
+        isAdmin()
+      );
+      allow update, delete: if isAdmin();
     }
   }
 }

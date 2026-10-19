@@ -1,19 +1,37 @@
-import { useState } from "react";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { useState, useEffect } from "react";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { doc, getDoc, writeBatch } from "firebase/firestore";
 import { auth, db, firebaseSetup } from "@/lib/firebase";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { School, CheckCircle, AlertCircle } from "lucide-react";
+import { School, CheckCircle, AlertCircle, ShieldCheck } from "lucide-react";
 
 export default function Setup() {
   const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [loading, setLoading] = useState(false);
+  const [checkingSetup, setCheckingSetup] = useState(true);
+  const [alreadySetup, setAlreadySetup] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
   const configBlocked = !firebaseSetup.isConfigured;
+
+  useEffect(() => {
+    async function checkExistingSetup() {
+      try {
+        const setupSnap = await getDoc(doc(db, "system", "setup"));
+        if (setupSnap.exists() && setupSnap.data()?.initialized) {
+          setAlreadySetup(true);
+        }
+      } catch (err) {
+        // If not created yet or permission checks occur, proceed with normal setup
+      } finally {
+        setCheckingSetup(false);
+      }
+    }
+    checkExistingSetup();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,12 +39,35 @@ export default function Setup() {
     setError("");
     setLoading(true);
     try {
-      const cred = await createUserWithEmailAndPassword(auth, form.email, form.password);
-      await setDoc(doc(db, "users", cred.user.uid), {
+      let uid: string;
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, form.email, form.password);
+        uid = cred.user.uid;
+      } catch (authErr: any) {
+        if (authErr.code === "auth/email-already-in-use") {
+          // If auth user was already created in earlier attempt, sign in to link user doc
+          const signInCred = await signInWithEmailAndPassword(auth, form.email, form.password);
+          uid = signInCred.user.uid;
+        } else {
+          throw authErr;
+        }
+      }
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, "users", uid), {
         name: form.name,
         email: form.email,
         role: "admin",
+        createdAt: new Date().toISOString(),
       });
+      batch.set(doc(db, "system", "setup"), {
+        initialized: true,
+        initializedAt: new Date().toISOString(),
+        initialAdminUid: uid,
+        initialAdminEmail: form.email,
+      });
+      await batch.commit();
+
       setDone(true);
     } catch (err: any) {
       setError(err.message ?? "Setup failed.");
@@ -49,7 +90,20 @@ export default function Setup() {
             <CardDescription>Create the first admin account</CardDescription>
           </CardHeader>
           <CardContent>
-            {done ? (
+            {checkingSetup ? (
+              <div className="text-center py-6 text-sm text-muted-foreground">
+                Checking system status...
+              </div>
+            ) : alreadySetup ? (
+              <div className="text-center space-y-3">
+                <ShieldCheck size={40} className="mx-auto text-primary" />
+                <p className="font-semibold text-foreground">Setup Already Completed</p>
+                <p className="text-sm text-muted-foreground">The initial administrator account has already been initialized.</p>
+                <Button className="w-full mt-2" onClick={() => (window.location.href = "/")}>
+                  Proceed to Sign In
+                </Button>
+              </div>
+            ) : done ? (
               <div className="text-center space-y-3">
                 <CheckCircle size={40} className="mx-auto text-green-500" />
                 <p className="font-semibold text-green-700">Admin account created!</p>
