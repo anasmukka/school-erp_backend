@@ -201,6 +201,13 @@ export default function HodExamScheduling() {
         // Pre-fill exam entries if not editing
         if (!editingId) {
           const map: Record<string, ExamSubjectEntry> = {};
+          const currentDefinedExam = structRes?.version?.exams?.find(
+            (e: any) => e.id === selectedExamId || e.name === selectedExamType
+          ) || structRes?.version?.exams?.[0];
+
+          const defaultMax = currentDefinedExam?.maxMarks ?? 70;
+          const defaultPass = currentDefinedExam?.passingMarks ?? 25;
+
           list.forEach((sub) => {
             map[sub.id] = {
               subjectId: sub.id,
@@ -208,8 +215,8 @@ export default function HodExamScheduling() {
               date: "",
               startTime: "09:30",
               endTime: "12:30",
-              maxMarks: 100,
-              passingMarks: 35,
+              maxMarks: defaultMax,
+              passingMarks: defaultPass,
             };
           });
           setExamEntries(map);
@@ -880,6 +887,19 @@ export default function HodExamScheduling() {
                       if (ex) {
                         setSelectedExamId(ex.id);
                         setSelectedExamType(ex.name);
+                        if (!editingId && ex.maxMarks) {
+                          setExamEntries((prev) => {
+                            const updated = { ...prev };
+                            Object.keys(updated).forEach((subId) => {
+                              updated[subId] = {
+                                ...updated[subId],
+                                maxMarks: ex.maxMarks ?? updated[subId].maxMarks,
+                                passingMarks: ex.passingMarks ?? updated[subId].passingMarks,
+                              };
+                            });
+                            return updated;
+                          });
+                        }
                       }
                     }}
                   >
@@ -889,7 +909,7 @@ export default function HodExamScheduling() {
                     <SelectContent>
                       {termFilteredExams.map((ex) => (
                         <SelectItem key={ex.id} value={ex.id} className="text-xs">
-                          {ex.name} ({ex.weightagePercentage}%)
+                          {ex.name} (Max: {ex.maxMarks ?? 70}M, Pass: {ex.passingMarks ?? 25}M)
                         </SelectItem>
                       ))}
                     </SelectContent>

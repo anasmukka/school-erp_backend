@@ -1,14 +1,12 @@
 /**
- * My Signature — Self-Service Signature Portal
+ * My Signature — Personal Signature Management Portal
  *
- * Accessible by: HOD, Class Teacher
- * Access: Each user manages ONLY their own signature.
- *
- * Features:
- * - Upload or replace their own signature image
- * - View current active signature
- * - See version history
- * - View which documents they are authorized to sign
+ * Requirements:
+ * - Every signature belongs to one authenticated ERP user account.
+ * - Only users explicitly granted eligibility by Admin (isEligible === true) can manage/upload.
+ * - Unauthorized/ineligible users can view their status, but cannot upload or activate themselves.
+ * - Authorized users can upload, preview, replace (new version), and view their authorized document types.
+ * - Permitted document types cannot be modified by the user.
  */
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -17,7 +15,6 @@ import {
   SignatureVersion,
   SignatoryRole,
   OfficialDocumentType,
-  DOCUMENT_SIGN_PERMISSIONS,
   getSignatureForUser,
   publishSignatureVersion,
   uploadSignatureImage,
@@ -39,6 +36,9 @@ import {
   Upload,
   ChevronDown,
   ChevronUp,
+  ShieldAlert,
+  ShieldCheck,
+  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -50,6 +50,7 @@ const DOC_LABELS: Record<OfficialDocumentType, string> = {
 };
 
 const ROLE_DESIGNATION_DEFAULTS: Partial<Record<SignatoryRole, string>> = {
+  admin: "Principal",
   hod: "Head of Department",
   class_teacher: "Class Teacher",
 };
@@ -91,13 +92,20 @@ export default function MySignature() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const role = appUser?.role as SignatoryRole | undefined;
+  const rawRole = appUser?.role;
+  const signatoryRole: SignatoryRole | undefined =
+    rawRole === "admin"
+      ? "admin"
+      : rawRole === "hod"
+      ? "hod"
+      : rawRole === "teacher"
+      ? "class_teacher"
+      : undefined;
 
-  // Only HOD and class_teacher should access this page
-  const isAuthorized = role === "hod" || role === "class_teacher";
+  const isRoleCandidate = !!signatoryRole;
 
   const loadRecord = async () => {
-    if (!appUser?.id || !isAuthorized) {
+    if (!appUser?.id || !isRoleCandidate) {
       setLoading(false);
       return;
     }
@@ -107,9 +115,9 @@ export default function MySignature() {
       setRecord(rec);
       if (rec) {
         setFormDesignation(rec.designation);
-        setPreviewUrl(rec.imageUrl || "");
+        setPreviewUrl(rec.imageUrl || rec.signatureImageUrl || "");
       } else {
-        setFormDesignation(ROLE_DESIGNATION_DEFAULTS[role as SignatoryRole] ?? "");
+        setFormDesignation(ROLE_DESIGNATION_DEFAULTS[signatoryRole as SignatoryRole] ?? "Faculty");
       }
     } catch (err: any) {
       toast.error("Failed to load your signature: " + err.message);
@@ -143,15 +151,25 @@ export default function MySignature() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!appUser || !role || !isAuthorized) return;
+    if (!appUser || !signatoryRole) return;
+
+    if (!record || !record.isEligible) {
+      toast.error("Unauthorized: Signature eligibility has not been granted by Administrator.");
+      return;
+    }
+
+    if (record.status !== "active" || record.isActive === false) {
+      toast.error("Unauthorized: Your signature profile is currently deactivated. Contact Administrator.");
+      return;
+    }
 
     if (!selectedFile) {
-      toast.error("Please select a signature image file.");
+      toast.error("Please select a signature image file to upload.");
       return;
     }
 
     if (!formDesignation.trim()) {
-      toast.error("Please enter your document designation (e.g. Class Teacher — Grade 9A).");
+      toast.error("Please enter your print designation.");
       return;
     }
 
@@ -159,11 +177,6 @@ export default function MySignature() {
     setUploadProgress(0);
     try {
       const nextVersion = (record?.versions?.length ?? 0) + 1;
-
-      // Determine the permitted document types for this role
-      const permittedDocs = (Object.keys(DOCUMENT_SIGN_PERMISSIONS) as OfficialDocumentType[]).filter(
-        (d) => DOCUMENT_SIGN_PERMISSIONS[d].includes(role)
-      );
 
       const uploadResult = await uploadSignatureImage(
         selectedFile,
@@ -175,16 +188,16 @@ export default function MySignature() {
       await publishSignatureVersion(
         {
           userId: appUser.id,
-          role,
+          role: record.role || signatoryRole,
           name: appUser.name || appUser.email || "Staff Member",
           designation: formDesignation.trim(),
-          authorizedDocumentTypes: permittedDocs,
+          authorizedDocumentTypes: record.authorizedDocumentTypes || ["report_card"],
           downloadUrl: uploadResult.downloadUrl,
           storagePath: uploadResult.storagePath,
           mimeType: uploadResult.mimeType,
           fileSizeBytes: uploadResult.fileSizeBytes,
         },
-        { uid: appUser.id, name: appUser.name || appUser.email || "Staff", role }
+        { uid: appUser.id, name: appUser.name || appUser.email || "Staff", role: signatoryRole }
       );
 
       toast.success(`Signature v${nextVersion} saved successfully.`);
@@ -197,28 +210,26 @@ export default function MySignature() {
     }
   };
 
-  if (!isAuthorized) {
+  // If user role is student, parent, operations, etc.
+  if (!isRoleCandidate) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center">
-        <AlertCircle className="w-12 h-12 text-rose-400" />
-        <h2 className="text-lg font-bold text-foreground">Access Denied</h2>
-        <p className="text-sm text-muted-foreground max-w-sm">
-          Only HOD and Class Teacher roles can access the signature portal.
+      <div className="flex flex-col items-center justify-center min-h-[350px] gap-3 text-center max-w-md mx-auto p-6">
+        <div className="p-3 bg-rose-50 text-rose-600 rounded-full">
+          <Lock className="w-8 h-8" />
+        </div>
+        <h2 className="text-lg font-bold text-foreground">Access Restricted</h2>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          The institutional e-signature portal is restricted to authorized faculty and administrative signatories.
         </p>
       </div>
     );
   }
 
-  const permittedDocs = (Object.keys(DOCUMENT_SIGN_PERMISSIONS) as OfficialDocumentType[]).filter(
-    (d) => DOCUMENT_SIGN_PERMISSIONS[d].includes(role!)
-  );
-
-  const activeVersion = record?.versions?.find(
-    (v) => v.versionId === record.activeVersionId
-  ) ?? record?.versions?.find((v) => v.isCurrent) ?? null;
+  const isEligible = record?.isEligible === true;
+  const isActive = record?.status === "active" && record?.isActive !== false;
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto">
+    <div className="space-y-6 max-w-3xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="p-2 bg-primary/10 text-primary rounded-xl">
@@ -227,278 +238,320 @@ export default function MySignature() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">My Signature</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Upload and manage your official institutional signature image.
-          </p>
-        </div>
-      </div>
-
-      {/* Role info notice */}
-      <div className="flex items-start gap-2.5 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800">
-        <Info className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" />
-        <div>
-          <p className="font-semibold">Your Signature Permissions</p>
-          <p className="mt-0.5 text-blue-700">
-            As a <strong>{role === "hod" ? "Head of Department" : "Class Teacher"}</strong>, your
-            signature will appear on:{" "}
-            {permittedDocs.map((d) => DOC_LABELS[d]).join(", ")}.
-          </p>
-          <p className="mt-1 text-blue-600">
-            You can only manage your own signature. Contact the Admin if there is an issue.
+            Manage your personal institutional signature image and review authorization status.
           </p>
         </div>
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        <div className="flex items-center justify-center py-24">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-[1fr_1fr]">
-          {/* LEFT: Current signature status */}
-          <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle className="text-sm font-bold">Current Active Signature</CardTitle>
-              {record && (
-                <CardDescription className="text-[11px]">
-                  Version {record.activeVersionNumber} •{" "}
-                  {record.updatedAt
-                    ? `Updated ${new Date(record.updatedAt).toLocaleDateString()}`
-                    : "Just uploaded"}
-                </CardDescription>
-              )}
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Preview box */}
-              <div
-                className="bg-white border rounded-xl flex items-center justify-center min-h-[120px] shadow-inner"
-                style={{
-                  backgroundImage:
-                    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='10' height='10' fill='%23f3f4f6'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f3f4f6'/%3E%3C/svg%3E\")",
-                }}
-              >
-                {record?.imageUrl ? (
-                  <img
-                    src={record.imageUrl}
-                    alt="Your signature"
-                    className="max-h-20 max-w-full object-contain"
-                    style={{ imageRendering: "crisp-edges" }}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center text-muted-foreground gap-1.5">
-                    <ImageIcon className="w-8 h-8 opacity-30" />
-                    <span className="text-xs opacity-60">No signature uploaded yet</span>
-                  </div>
-                )}
+      ) : !isEligible ? (
+        /* INELIGIBLE NOTICE CARD */
+        <Card className="rounded-2xl border-amber-200 bg-amber-50/50 p-6 shadow-xs">
+          <div className="flex flex-col sm:flex-row items-start gap-4">
+            <div className="p-3 bg-amber-100 text-amber-800 rounded-xl shrink-0">
+              <ShieldAlert className="w-7 h-7" />
+            </div>
+            <div className="space-y-2 flex-1">
+              <h2 className="text-base font-bold text-amber-900">
+                Signature Eligibility Not Granted
+              </h2>
+              <p className="text-xs text-amber-800 leading-relaxed">
+                Your ERP account (<strong>{appUser?.name || appUser?.email}</strong>) has not been granted
+                institutional e-signature eligibility by the School Administration.
+              </p>
+              <div className="bg-white/80 rounded-xl p-3 border border-amber-200 text-xs space-y-1 text-muted-foreground">
+                <div className="flex justify-between">
+                  <span>ERP Account:</span>
+                  <span className="font-semibold text-foreground">{appUser?.name || "Staff Member"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Email:</span>
+                  <span>{appUser?.email}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Assigned Role:</span>
+                  <span className="capitalize">{rawRole}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Firebase Auth UID:</span>
+                  <span className="font-mono text-[10px]">{appUser?.id}</span>
+                </div>
               </div>
+              <p className="text-xs text-amber-800 pt-1">
+                To sign official report cards or institutional documents, please contact the Principal or
+                School Administrator to request signature authorization.
+              </p>
+            </div>
+          </div>
+        </Card>
+      ) : (
+        /* AUTHORIZED SIGNATORY PORTAL */
+        <div className="space-y-6">
+          {/* Eligibility Banner */}
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-900">
+            <div className="flex items-start gap-2.5">
+              <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600" />
+              <div>
+                <p className="font-semibold">Authorized Institutional Signatory</p>
+                <p className="mt-0.5 text-emerald-800">
+                  You are authorized by Administrator{" "}
+                  <strong>{record.assignedByName || record.authorizedByName || "Principal"}</strong>.
+                  Your signature is authorized for:{" "}
+                  <strong>
+                    {(record.authorizedDocumentTypes || []).map((d) => DOC_LABELS[d]).join(", ")}
+                  </strong>
+                  .
+                </p>
+              </div>
+            </div>
+            <Badge
+              variant="outline"
+              className={`text-[9px] uppercase font-semibold shrink-0 ${
+                isActive
+                  ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                  : "bg-rose-100 text-rose-800 border-rose-300"
+              }`}
+            >
+              {isActive ? "Active" : "Deactivated"}
+            </Badge>
+          </div>
 
-              {record ? (
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Status</span>
-                    <Badge
-                      variant="outline"
-                      className={`text-[10px] ${
-                        record.status === "active"
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : "bg-zinc-100 text-zinc-600"
-                      }`}
-                    >
-                      {record.status}
-                    </Badge>
+          {!isActive && (
+            <div className="flex items-center gap-2 p-3 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-xl">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>
+                Your signature is temporarily deactivated by the Administrator. You cannot sign documents
+                or update signatures until an Administrator reactivates your account.
+              </span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* LEFT: Active Signature Overview */}
+            <Card className="rounded-2xl">
+              <CardHeader className="pb-3 border-b">
+                <CardTitle className="text-sm font-bold">Active Signature Profile</CardTitle>
+                <CardDescription className="text-[11px]">
+                  Immutable record linked to your verified Firebase Auth UID.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-4 space-y-4">
+                <div
+                  className="bg-white border rounded-xl flex items-center justify-center min-h-[120px] shadow-inner"
+                  style={{
+                    backgroundImage:
+                      "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='10' height='10' fill='%23f3f4f6'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f3f4f6'/%3E%3C/svg%3E\")",
+                  }}
+                >
+                  {record.imageUrl || record.signatureImageUrl ? (
+                    <img
+                      src={record.imageUrl || record.signatureImageUrl}
+                      alt="Your official signature"
+                      className="max-h-20 max-w-full object-contain"
+                      style={{ imageRendering: "crisp-edges" }}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center text-muted-foreground gap-1.5 p-3 text-center">
+                      <ImageIcon className="w-7 h-7 opacity-30" />
+                      <span className="text-xs font-medium text-amber-700">No signature image uploaded</span>
+                      <span className="text-[10px] text-muted-foreground">Upload your handwritten signature image below</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2 text-xs divide-y">
+                  <div className="flex items-center justify-between pb-1.5">
+                    <span className="text-muted-foreground">Print Designation</span>
+                    <span className="font-semibold text-foreground">{record.designation}</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Designation</span>
-                    <span className="font-medium">{record.designation}</span>
+                  <div className="flex items-center justify-between py-1.5">
+                    <span className="text-muted-foreground">Active Version</span>
+                    <span className="font-semibold">v{record.activeVersionNumber || 1}</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Version</span>
-                    <span className="font-medium">v{record.activeVersionNumber}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Authorized for</span>
+                  <div className="flex items-center justify-between py-1.5">
+                    <span className="text-muted-foreground">Permitted Documents</span>
                     <div className="flex flex-wrap gap-1 justify-end">
-                      {record.authorizedDocumentTypes.map((d) => (
+                      {(record.authorizedDocumentTypes || []).map((d) => (
                         <Badge key={d} variant="secondary" className="text-[9px] py-0 px-1.5">
-                          {DOC_LABELS[d as OfficialDocumentType]}
+                          {DOC_LABELS[d]}
                         </Badge>
                       ))}
                     </div>
                   </div>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  No signature on file. Upload one to enable document signing.
-                </div>
-              )}
-
-              {/* Version history */}
-              {record && record.versions && record.versions.length > 0 && (
-                <div className="border-t pt-3 space-y-2">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => setShowHistory((p) => !p)}
-                  >
-                    <History className="w-3.5 h-3.5" />
-                    {showHistory ? "Hide" : "Show"} version history ({record.versions.length})
-                    {showHistory ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  </button>
-                  {showHistory && (
-                    <div className="space-y-1.5">
-                      {[...record.versions].reverse().map((v) => (
-                        <VersionRow key={v.versionId} version={v} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* RIGHT: Upload form */}
-          <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle className="text-sm font-bold">
-                {record ? "Upload New Version" : "Upload Your Signature"}
-              </CardTitle>
-              <CardDescription className="text-[11px]">
-                {record
-                  ? "Each upload creates a new version. Old finalized documents keep their original signature."
-                  : "Upload a clear PNG or JPG of your handwritten signature."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSave} className="space-y-4">
-                {/* Designation */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Document Designation</Label>
-                  <Input
-                    value={formDesignation}
-                    onChange={(e) => setFormDesignation(e.target.value)}
-                    placeholder="e.g. Class Teacher — Grade 9A, Head of Department — Science"
-                    required
-                    disabled={saving}
-                  />
-                  <p className="text-[10px] text-muted-foreground">
-                    This label appears beneath your signature on printed documents.
-                  </p>
+                  <div className="flex items-center justify-between pt-1.5">
+                    <span className="text-muted-foreground">Authorized On</span>
+                    <span>
+                      {record.assignedAt || record.authorizedAt
+                        ? new Date(record.assignedAt || record.authorizedAt).toLocaleDateString()
+                        : "—"}
+                    </span>
+                  </div>
                 </div>
 
-                {/* File drop zone */}
-                <div className="space-y-2">
-                  <Label className="text-xs">Signature Image</Label>
-                  <div
-                    className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-colors ${
-                      selectedFile
-                        ? "border-primary/40 bg-primary/5"
-                        : "border-border hover:border-primary/40 hover:bg-muted/20"
-                    }`}
-                    onClick={() => !saving && fileInputRef.current?.click()}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const f = e.dataTransfer.files[0];
-                      if (f) {
-                        const synth = { target: { files: e.dataTransfer.files } } as any;
-                        handleFileSelect(synth);
-                      }
-                    }}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp"
-                      className="hidden"
-                      onChange={handleFileSelect}
-                      disabled={saving}
-                    />
-                    {selectedFile ? (
-                      <div className="flex items-center justify-center gap-2 text-xs text-primary">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span className="font-medium truncate max-w-[200px]">
-                          {selectedFile.name}
-                        </span>
-                        <span className="text-muted-foreground">
-                          ({(selectedFile.size / 1024).toFixed(1)} KB)
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="space-y-1 text-muted-foreground">
-                        <Upload className="w-6 h-6 mx-auto opacity-40" />
-                        <p className="text-xs font-medium">Click or drag & drop</p>
-                        <p className="text-[10px]">PNG (recommended), JPG, WebP — max 2 MB</p>
-                        <p className="text-[10px] text-blue-600">
-                          Tip: Use a white paper, sign with a dark pen, scan or photograph clearly.
-                          PNG with transparent background works best.
-                        </p>
+                {/* Version History Collapsible */}
+                {record.versions && record.versions.length > 0 && (
+                  <div className="border-t pt-3 space-y-2">
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowHistory((p) => !p)}
+                    >
+                      <History className="w-3.5 h-3.5" />
+                      {showHistory ? "Hide" : "Show"} Version History ({record.versions.length})
+                      {showHistory ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    {showHistory && (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pt-1">
+                        {[...record.versions].reverse().map((v) => (
+                          <VersionRow key={v.versionId} version={v} />
+                        ))}
                       </div>
                     )}
                   </div>
-                  {fileError && (
-                    <p className="flex items-center gap-1.5 text-xs text-destructive">
-                      <AlertCircle className="w-3.5 h-3.5" />
-                      {fileError}
-                    </p>
-                  )}
-                </div>
+                )}
+              </CardContent>
+            </Card>
 
-                {/* Preview of newly selected file */}
-                {selectedFile && previewUrl && (
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Preview of new signature</Label>
+            {/* RIGHT: Upload or Replace Form */}
+            <Card className="rounded-2xl">
+              <CardHeader className="pb-3 border-b">
+                <CardTitle className="text-sm font-bold">
+                  {record.imageUrl ? "Replace Signature Image" : "Upload Signature Image"}
+                </CardTitle>
+                <CardDescription className="text-[11px]">
+                  Uploading creates a new version (e.g. v{(record.versions?.length || 0) + 1}). Past finalized documents preserve their original signature snapshot.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-4">
+                <form onSubmit={handleSave} className="space-y-4">
+                  {/* Designation */}
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Print Designation (on documents)</Label>
+                    <Input
+                      value={formDesignation}
+                      onChange={(e) => setFormDesignation(e.target.value)}
+                      placeholder="e.g. Class Teacher - Grade 9A"
+                      required
+                      disabled={saving || !isActive}
+                    />
+                  </div>
+
+                  {/* File dropzone */}
+                  <div className="space-y-2">
+                    <Label className="text-xs">Signature Image</Label>
                     <div
-                      className="bg-white border rounded-xl flex items-center justify-center min-h-[80px] shadow-inner"
-                      style={{
-                        backgroundImage:
-                          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='10' height='10' fill='%23f3f4f6'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f3f4f6'/%3E%3C/svg%3E\")",
+                      className={`border-2 border-dashed rounded-xl p-5 text-center transition-colors ${
+                        !isActive
+                          ? "opacity-50 cursor-not-allowed bg-muted/20"
+                          : selectedFile
+                          ? "border-primary/40 bg-primary/5 cursor-pointer"
+                          : "border-border hover:border-primary/40 hover:bg-muted/20 cursor-pointer"
+                      }`}
+                      onClick={() => !saving && isActive && fileInputRef.current?.click()}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (!isActive) return;
+                        const f = e.dataTransfer.files[0];
+                        if (f) {
+                          const synth = { target: { files: e.dataTransfer.files } } as any;
+                          handleFileSelect(synth);
+                        }
                       }}
                     >
-                      <img
-                        src={previewUrl}
-                        alt="New signature preview"
-                        className="max-h-16 max-w-full object-contain"
-                        style={{ imageRendering: "crisp-edges" }}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        className="hidden"
+                        onChange={handleFileSelect}
+                        disabled={saving || !isActive}
                       />
+                      {selectedFile ? (
+                        <div className="flex items-center justify-center gap-2 text-xs text-primary">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span className="font-medium truncate max-w-[200px]">{selectedFile.name}</span>
+                          <span className="text-muted-foreground">
+                            ({(selectedFile.size / 1024).toFixed(1)} KB)
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="space-y-1 text-muted-foreground">
+                          <Upload className="w-6 h-6 mx-auto opacity-40" />
+                          <p className="text-xs font-medium">Click or drag & drop signature file</p>
+                          <p className="text-[10px]">PNG (transparent recommended), JPG, WebP — max 2 MB</p>
+                        </div>
+                      )}
                     </div>
-                    <p className="text-[10px] text-muted-foreground text-center">
-                      Transparent backgrounds are preserved. Aspect ratio is maintained.
-                    </p>
+                    {fileError && (
+                      <p className="flex items-center gap-1.5 text-xs text-destructive">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        {fileError}
+                      </p>
+                    )}
                   </div>
-                )}
 
-                {/* Upload progress */}
-                {saving && uploadProgress > 0 && (
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>Uploading…</span>
-                      <span>{uploadProgress}%</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                  {/* Preview */}
+                  {selectedFile && previewUrl && (
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Preview of new signature</Label>
                       <div
-                        className="h-full bg-primary rounded-full transition-all"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
+                        className="bg-white border rounded-xl flex items-center justify-center min-h-[80px] shadow-inner"
+                        style={{
+                          backgroundImage:
+                            "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='10' height='10' fill='%23f3f4f6'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f3f4f6'/%3E%3C/svg%3E\")",
+                        }}
+                      >
+                        <img
+                          src={previewUrl}
+                          alt="New signature preview"
+                          className="max-h-16 max-w-full object-contain"
+                          style={{ imageRendering: "crisp-edges" }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                <Button type="submit" disabled={saving || !selectedFile} className="w-full gap-2">
-                  {saving ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      {uploadProgress > 0 ? `Uploading ${uploadProgress}%…` : "Saving…"}
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="w-3.5 h-3.5" />
-                      {record ? "Upload New Version" : "Save Signature"}
-                    </>
                   )}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
+
+                  {/* Progress */}
+                  {saving && uploadProgress > 0 && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-muted-foreground">
+                        <span>Uploading…</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all"
+                          style={{ width: `${uploadProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <Button
+                    type="submit"
+                    disabled={saving || !selectedFile || !isActive}
+                    className="w-full gap-2"
+                  >
+                    {saving ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        {uploadProgress > 0 ? `Uploading ${uploadProgress}%…` : "Saving…"}
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        {record.imageUrl ? "Upload New Version" : "Save Signature"}
+                      </>
+                    )}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )}
     </div>

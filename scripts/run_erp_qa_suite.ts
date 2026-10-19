@@ -42,6 +42,7 @@ import {
   HallTicketGlobalSettings,
   HallTicketRule,
   HallTicketBypass,
+  StudentFeeAssignment,
 } from "../src/lib/types";
 import { expandRecurringOccurrences, canUserViewEvent } from "../src/lib/calendar";
 import * as fs from "fs";
@@ -553,6 +554,25 @@ const mockFeeStructure: FeeStructure = {
   ],
 };
 
+const mockStudentFeeAssignment: StudentFeeAssignment = {
+  id: "sfa_stu_001",
+  studentId: mockStudent.id,
+  studentUid: mockStudent.studentUid,
+  studentName: mockStudent.name,
+  grade: "9",
+  academicSession: "2026-27",
+  structureId: "fs_grade_9",
+  totalAmount: 50000,
+  netAmount: 50000,
+  status: "active",
+  installments: [
+    { id: "inst_1", label: "Term 1 Installment", amount: 25000, dueDate: "2026-06-30" },
+    { id: "inst_2", label: "Term 2 Installment", amount: 25000, dueDate: "2026-11-30" },
+  ],
+  createdAt: "2026-06-01",
+  updatedAt: "2026-06-01",
+};
+
 runTest("HallTickets", "Global Fee Gate Disabled: All students eligible regardless of fees", () => {
   const globalSettingsDisabled: HallTicketGlobalSettings = {
     id: "default",
@@ -566,6 +586,7 @@ runTest("HallTickets", "Global Fee Gate Disabled: All students eligible regardle
     student: mockStudent,
     schedule: mockSchedule,
     feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: [], // ₹0 paid!
     globalSettings: globalSettingsDisabled,
   });
@@ -619,7 +640,7 @@ runTest("HallTickets", "Rule: Installment 1 >= 50%. Paid 30% -> BLOCKED, Paid 50
   const evalBlocked = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: payments30Pct,
     globalSettings: globalSettingsEnabled,
     examRule: rule50Pct,
@@ -650,7 +671,7 @@ runTest("HallTickets", "Rule: Installment 1 >= 50%. Paid 30% -> BLOCKED, Paid 50
   const evalEligible = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: payments50Pct,
     globalSettings: globalSettingsEnabled,
     examRule: rule50Pct,
@@ -702,7 +723,7 @@ runTest("HallTickets", "Rule: Installment 1 == 100%. Paid 80% -> BLOCKED, Paid 1
   const evalBlocked = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: payments80Pct,
     globalSettings: globalSettingsEnabled,
     examRule: rule100Pct,
@@ -722,6 +743,7 @@ runTest("HallTickets", "Rule: Installment 1 == 100%. Paid 80% -> BLOCKED, Paid 1
       installmentId: "inst_1",
       amount: 25000,
       paymentMode: "online",
+      verificationStatus: "verified",
       paidAt: "2026-06-10",
       recordedBy: "gateway",
     },
@@ -730,7 +752,7 @@ runTest("HallTickets", "Rule: Installment 1 == 100%. Paid 80% -> BLOCKED, Paid 1
   const evalEligible = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: payments100Pct,
     globalSettings: globalSettingsEnabled,
     examRule: rule100Pct,
@@ -784,7 +806,7 @@ runTest("HallTickets", "Bypass System: Approved bypass overrides fee block; Reje
   const evalBypassed = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: [], // ₹0 paid
     globalSettings: globalSettingsEnabled,
     examRule: rule100Pct,
@@ -804,7 +826,7 @@ runTest("HallTickets", "Bypass System: Approved bypass overrides fee block; Reje
   const evalRejected = evaluateStudentExamEligibility({
     student: mockStudent,
     schedule: mockSchedule,
-    feeStructure: mockFeeStructure,
+    studentFeeAssignment: mockStudentFeeAssignment,
     studentPayments: [],
     globalSettings: globalSettingsEnabled,
     examRule: rule100Pct,
@@ -974,12 +996,13 @@ runTest("Regression", "REG-001 (BUG-001): PaymentIntents collection enforces IDO
   );
 });
 
-runTest("Regression", "REG-002 (BUG-002): FeePayments permits student client write for verified online payments", () => {
+runTest("Regression", "REG-002 (SEC-01): FeePayments strictly restricts client-side creation to admin and accountant", () => {
   const rules = fs.readFileSync("firestore.rules", "utf-8");
   assert(
-    rules.includes("request.resource.data.paymentMode == 'online'") &&
-    rules.includes("request.resource.data.studentId == request.auth.uid"),
-    "feePayments must permit student client writes for verified online payments"
+    rules.includes("match /feePayments/{paymentId}") &&
+    rules.includes("allow create: if isAdmin() || (isSignedIn() && getUserRole() == 'accountant');") &&
+    rules.includes("allow delete: if false;"),
+    "feePayments must restrict client-side creation to admin and accountant, and prohibit deletion"
   );
 });
 

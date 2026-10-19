@@ -32,17 +32,13 @@ function getLocalIsoDate(date = new Date()) {
   return copy.toISOString().slice(0, 10);
 }
 
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("Unable to read file"));
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+import {
+  compressImageToDataUrl,
+  validateImageFile,
+  validateImagesTotalPayload,
+  BASE64_STORAGE_LIMITS,
+} from "@/lib/base64Image";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 export default function AssignmentsActivities() {
   const { appUser, loading } = useAuth();
@@ -146,21 +142,34 @@ export default function AssignmentsActivities() {
 
   const addImages = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const next = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (next.length === 0) {
-      toast({ title: "Invalid files", description: "Please choose image files.", variant: "destructive" });
-      return;
-    }
-    const tooLarge = next.find((f) => f.size > 350 * 1024);
-    if (tooLarge) {
-      toast({ title: "Image too large", description: "Each image must be under 350KB.", variant: "destructive" });
-      return;
+    const list = Array.from(files);
+
+    for (const f of list) {
+      const check = validateImageFile(f);
+      if (!check.valid) {
+        toast({
+          title: "Invalid image",
+          description: check.error || "Unsupported image file.",
+          variant: "destructive",
+        });
+        return;
+      }
     }
 
-    setForm((current) => ({
-      ...current,
-      images: [...current.images, ...next.map((f) => ({ file: f, name: f.name }))].slice(0, 3),
-    }));
+    setForm((current) => {
+      const merged = [...current.images, ...list.map((f) => ({ file: f, name: f.name }))];
+      if (merged.length > BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument) {
+        toast({
+          title: "Attachment limit",
+          description: `You can attach up to ${BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument} images per assignment/activity.`,
+          variant: "destructive",
+        });
+      }
+      return {
+        ...current,
+        images: merged.slice(0, BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument),
+      };
+    });
   };
 
   const publish = async () => {
@@ -176,12 +185,28 @@ export default function AssignmentsActivities() {
 
     setSaving(true);
     try {
-      const images = await Promise.all(
-        form.images.map(async (img) => ({
-          name: img.name,
-          dataUrl: await fileToDataUrl(img.file),
-        })),
+      const compressedImages = await Promise.all(
+        form.images.map(async (img) => {
+          const compressed = await compressImageToDataUrl(img.file);
+          return {
+            name: img.name,
+            dataUrl: compressed.dataUrl,
+            sizeBytes: compressed.sizeBytes,
+            mimeType: compressed.mimeType,
+          };
+        }),
       );
+
+      const payloadCheck = validateImagesTotalPayload(compressedImages);
+      if (!payloadCheck.valid) {
+        toast({
+          title: "Attachments too large",
+          description: payloadCheck.error || "Images exceed allowed size.",
+          variant: "destructive",
+        });
+        setSaving(false);
+        return;
+      }
 
       await addDoc(collection(db, "assignmentsActivities"), {
         kind: form.kind,
@@ -190,7 +215,7 @@ export default function AssignmentsActivities() {
         dueDate: form.dueDate,
         sectionId: assignedSection.id,
         grade: assignedSection.grade,
-        images,
+        images: compressedImages,
         createdAt: new Date().toISOString(),
         createdBy: teacherDocId,
         createdByName: appUser?.name ?? "Teacher",
@@ -411,7 +436,7 @@ export default function AssignmentsActivities() {
                           {item.images.slice(0, 3).map((img) => (
                             <img
                               key={img.name}
-                              src={img.dataUrl}
+                              src={resolveFileUrl(img.dataUrl)}
                               alt={img.name}
                               className="h-28 w-full rounded-xl object-cover border border-border"
                             />

@@ -83,7 +83,7 @@ const navItems: NavItem[] = [
   { label: "Exam Scheduling", href: "/hod/exam-scheduling", icon: <CalendarDays size={18} />, roles: ["hod"] },
   { label: "School Calendar", href: "/hod/calendar", icon: <CalendarDays size={18} />, roles: ["hod"] },
   { label: "Notices", href: "/hod/notices", icon: <Bell size={18} />, roles: ["hod"] },
-  { label: "My Signature", href: "/my-signature", icon: <FileSignature size={18} />, roles: ["hod", "class_teacher"] },
+  { label: "My Signature", href: "/my-signature", icon: <FileSignature size={18} />, roles: ["admin", "hod", "teacher"] },
   { label: "School Calendar", href: "/teacher/calendar", icon: <CalendarDays size={18} />, roles: ["teacher"] },
   { label: "Marks Entry", href: "/teacher/marks", icon: <FileSpreadsheet size={18} />, roles: ["teacher"] },
   { label: "RFID Attendance", href: "/teacher/rfid-attendance", icon: <Wifi size={18} />, roles: ["teacher"], requiresClassTeacher: true },
@@ -177,7 +177,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       return false;
     }
 
-    if (n.requiresClassTeacher && !isClassTeacher) {
+    if (n.requiresClassTeacher && appUser?.role === "teacher" && !isClassTeacher) {
       return false;
     }
 

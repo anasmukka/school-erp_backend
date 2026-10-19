@@ -41,7 +41,17 @@ export interface UnifiedUploadResult {
   storageProvider: "cloudflare_r2" | "firebase_storage";
 }
 
-const WORKER_URL = import.meta.env.VITE_WORKER_URL || "";
+function getEnvVar(key: string): string {
+  if (typeof import.meta !== "undefined" && (import.meta as any).env) {
+    return (import.meta as any).env[key] || "";
+  }
+  if (typeof process !== "undefined" && process.env) {
+    return process.env[key] || "";
+  }
+  return "";
+}
+
+const WORKER_URL = getEnvVar("VITE_WORKER_URL");
 
 /**
  * Whether the Firebase Storage fallback is explicitly allowed via env var.
@@ -49,7 +59,7 @@ const WORKER_URL = import.meta.env.VITE_WORKER_URL || "";
  * Only set to "true" during initial migration when R2 is not yet deployed.
  */
 const FIREBASE_FALLBACK_ALLOWED =
-  import.meta.env.VITE_ALLOW_FIREBASE_STORAGE_FALLBACK === "true";
+  getEnvVar("VITE_ALLOW_FIREBASE_STORAGE_FALLBACK") === "true";
 
 /**
  * Checks if Cloudflare Worker / R2 endpoint is configured
@@ -183,29 +193,146 @@ export async function uploadObject(
   throw new Error("Unable to upload non-File blob without Worker R2 configured.");
 }
 
+export type StorageReferenceType =
+  | "http_url"
+  | "firebase_storage"
+  | "base64_data"
+  | "r2_key"
+  | "empty"
+  | "unknown";
+
 /**
- * Resolves public or authenticated URL for an object key or legacy URL
+ * Classifies a storage reference string into its underlying category.
  */
-export function resolveFileUrl(reference: string | R2ObjectMetadata | undefined | null): string {
+export function classifyStorageReference(
+  reference: string | undefined | null
+): StorageReferenceType {
+  if (!reference || typeof reference !== "string" || !reference.trim()) {
+    return "empty";
+  }
+  const trimmed = reference.trim();
+  if (trimmed.startsWith("data:")) {
+    return "base64_data";
+  }
+  if (
+    trimmed.includes("firebasestorage.googleapis.com") ||
+    trimmed.includes("storage.googleapis.com")
+  ) {
+    return "firebase_storage";
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return "http_url";
+  }
+  if (
+    trimmed.startsWith("schools/") ||
+    trimmed.startsWith("printing-orders/") ||
+    trimmed.startsWith("photos/") ||
+    trimmed.startsWith("signatures/") ||
+    trimmed.startsWith("profile-change-requests/")
+  ) {
+    return "r2_key";
+  }
+  return "unknown";
+}
+
+export interface StorageCapability {
+  r2Configured: boolean;
+  workerUrl: string;
+  firebaseFallbackAllowed: boolean;
+  status: "r2_ready" | "unconfigured" | "migration_fallback";
+  description: string;
+}
+
+/**
+ * Returns current object storage readiness without throwing errors.
+ */
+export function getStorageCapabilityStatus(): StorageCapability {
+  const r2 = isR2Configured();
+  if (r2) {
+    return {
+      r2Configured: true,
+      workerUrl: WORKER_URL,
+      firebaseFallbackAllowed: FIREBASE_FALLBACK_ALLOWED,
+      status: "r2_ready",
+      description: "Cloudflare R2 storage operational via Worker gateway.",
+    };
+  }
+  if (FIREBASE_FALLBACK_ALLOWED) {
+    return {
+      r2Configured: false,
+      workerUrl: "",
+      firebaseFallbackAllowed: true,
+      status: "migration_fallback",
+      description: "Migration fallback: Firebase Storage active (temporary).",
+    };
+  }
+  return {
+    r2Configured: false,
+    workerUrl: "",
+    firebaseFallbackAllowed: false,
+    status: "unconfigured",
+    description: "Cloudflare R2 is unconfigured. VITE_WORKER_URL is unset.",
+  };
+}
+
+/**
+ * Resolves public or authenticated URL for an object key, Base64 string, or legacy URL.
+ *
+ * Distinguishes between:
+ * - Base64 data URLs: returned directly.
+ * - HTTP/HTTPS download URLs (including Firebase Storage): returned directly.
+ * - R2 object keys:
+ *     - When Worker is configured: resolves to ${WORKER_URL}/api/storage/file/{key}
+ *     - When Worker is NOT configured: returns "" (NEVER returns raw object key as a URL).
+ * - Empty/null/undefined: returns "".
+ */
+export function resolveFileUrl(
+  reference: string | R2ObjectMetadata | undefined | null
+): string {
   if (!reference) return "";
-  if (typeof reference === "string") {
-    // If it's already an HTTP / data URL
-    if (
-      reference.startsWith("http://") ||
-      reference.startsWith("https://") ||
-      reference.startsWith("data:")
-    ) {
-      return reference;
+
+  if (typeof reference !== "string") {
+    if (reference.publicUrl) return reference.publicUrl;
+    if (reference.objectKey && isR2Configured()) {
+      return `${WORKER_URL}/api/storage/file/${encodeURIComponent(reference.objectKey)}`;
     }
-    // If it's an R2 key and Worker is configured
-    if (isR2Configured() && reference.startsWith("schools/")) {
-      return `${WORKER_URL}/api/storage/file/${encodeURIComponent(reference)}`;
-    }
-    return reference;
+    return "";
   }
-  if (reference.publicUrl) return reference.publicUrl;
-  if (reference.objectKey && isR2Configured()) {
-    return `${WORKER_URL}/api/storage/file/${encodeURIComponent(reference.objectKey)}`;
+
+  const trimmed = reference.trim();
+  if (!trimmed) return "";
+
+  // 1. Base64 data URLs: directly renderable
+  if (trimmed.startsWith("data:")) {
+    return trimmed;
   }
+
+  // 2. HTTP/HTTPS URLs (including Firebase Storage download URLs)
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+
+  // 3. R2 object keys
+  if (isR2Configured()) {
+    return `${WORKER_URL}/api/storage/file/${encodeURIComponent(trimmed)}`;
+  }
+
+  // 4. Worker is unconfigured and reference is not a URL:
+  // Never treat an R2 object key as a directly accessible URL.
+  // Returning empty string allows consumer components to render placeholders/avatars cleanly.
   return "";
 }
+
+/**
+ * Checks whether a given reference resolves to a renderable URL
+ */
+export function isRenderableUrl(reference: string | undefined | null): boolean {
+  const resolved = resolveFileUrl(reference);
+  return Boolean(
+    resolved &&
+      (resolved.startsWith("http://") ||
+        resolved.startsWith("https://") ||
+        resolved.startsWith("data:"))
+  );
+}
+

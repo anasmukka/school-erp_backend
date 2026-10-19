@@ -25,6 +25,7 @@ import {
 import { User as UserIcon, Trash2, Loader2, CalendarDays, ArrowDownAZ, Search, Plus, Filter, Users, X } from "lucide-react";
 import { syncAlphabeticalRollNumbersForSection } from "@/lib/enrollments";
 import { SearchInput } from "@/components/ui/SearchInput";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 const GRADES = ["1","2","3","4","5","6","7","8","9","10","11","12"];
 
@@ -495,8 +496,8 @@ export default function Students() {
                     <CardContent className="pt-5">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-3">
-                          {s.photo ? (
-                            <img src={s.photo} alt={s.name} className="w-10 h-10 rounded-full object-cover border" />
+                          {s.photo && resolveFileUrl(s.photo) ? (
+                            <img src={resolveFileUrl(s.photo)} alt={s.name} className="w-10 h-10 rounded-full object-cover border" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center">
                               <UserIcon size={18} className="text-emerald-600" />

@@ -38,6 +38,7 @@ import {
   cancelProfileChangeRequest,
 } from "@/lib/profileChangeRequests";
 import { uploadPrintingDocument } from "@/lib/storage";
+import { resolveFileUrl } from "@/lib/objectStorage";
 import type { ProfileChangeRequestV2, ProfileChangeRequestField, Role } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 
@@ -102,10 +103,11 @@ function StatusBadge({ status }: { status: ProfileChangeRequestV2["status"] }) {
 // ============================================================
 function ProfileAvatar({ name, photo, size = "lg" }: { name: string; photo?: string; size?: "sm" | "md" | "lg" }) {
   const sizeClass = size === "lg" ? "h-24 w-24 text-3xl" : size === "md" ? "h-16 w-16 text-xl" : "h-10 w-10 text-sm";
-  if (photo) {
+  const resolvedPhoto = resolveFileUrl(photo);
+  if (resolvedPhoto) {
     return (
       <div className={`${sizeClass} rounded-full overflow-hidden border-4 border-white shadow-md shrink-0`}>
-        <img src={photo} alt={name} className="w-full h-full object-cover" />
+        <img src={resolvedPhoto} alt={name} className="w-full h-full object-cover" />
       </div>
     );
   }

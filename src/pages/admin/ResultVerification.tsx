@@ -26,6 +26,7 @@ import {
   CalculatedSubjectResult,
 } from "@/lib/resultEngine";
 import { generateReportCardPdf } from "@/lib/generateReportCardPdf";
+import { resolveStudentReportCardSignatures } from "@/lib/signatures";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -277,6 +278,22 @@ export default function ResultVerification() {
         rankMap.set(s.id, idx + 1);
       });
 
+      // Authoritatively resolve and verify section-assigned signatories
+      const sigResolution = await resolveStudentReportCardSignatures({
+        sectionId: selectedSection.id,
+        sessionId: effectiveSessionId,
+      });
+
+      if (!sigResolution.ready) {
+        toast({
+          title: "Signatures Required",
+          description: `Cannot publish official report cards. Signatory requirements missing: ${sigResolution.missingSignatories.join("; ")}`,
+          variant: "destructive",
+        });
+        setPublishing(false);
+        return;
+      }
+
       for (const item of students) {
         const stu = item.student as Student;
         const enr = item.enrollment as Enrollment;
@@ -489,8 +506,27 @@ export default function ResultVerification() {
           publishedAt: now,
           publishedBy: appUser.id,
           signatures: {
-            classTeacher: { name: appUser.name, signedAt: now },
-            principal: { name: "Principal", signedAt: now },
+            classTeacher: sigResolution.signatures.classTeacher
+              ? {
+                  name: sigResolution.signatures.classTeacher.displayName,
+                  signedAt: now,
+                  imageUrl: sigResolution.signatures.classTeacher.imageUrl,
+                }
+              : undefined,
+            hod: sigResolution.signatures.hod
+              ? {
+                  name: sigResolution.signatures.hod.displayName,
+                  signedAt: now,
+                  imageUrl: sigResolution.signatures.hod.imageUrl,
+                }
+              : undefined,
+            principal: sigResolution.signatures.principal
+              ? {
+                  name: sigResolution.signatures.principal.displayName,
+                  signedAt: now,
+                  imageUrl: sigResolution.signatures.principal.imageUrl,
+                }
+              : undefined,
           },
         };
 

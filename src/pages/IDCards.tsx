@@ -18,6 +18,7 @@ import {
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { resolveFileUrl } from "@/lib/objectStorage";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/contexts/AuthContext";
@@ -454,8 +455,8 @@ function IDCardDisplay({ p, compact = false }: { p: CardPerson; compact?: boolea
             className={`overflow-hidden rounded-sm border bg-slate-100 ${photoHeight}`}
             style={{ borderColor: theme.headerAlt }}
           >
-            {p.photo ? (
-              <img src={p.photo} alt={p.name} className="h-full w-full object-cover" />
+            {p.photo && resolveFileUrl(p.photo) ? (
+              <img src={resolveFileUrl(p.photo)} alt={p.name} className="h-full w-full object-cover" />
             ) : (
               <div className="flex h-full items-center justify-center text-base font-semibold text-slate-500">
                 {getInitials(p.name)}

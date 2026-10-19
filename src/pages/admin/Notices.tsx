@@ -47,18 +47,13 @@ import {
   Megaphone,
   Eye,
 } from "lucide-react";
-
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("Unable to read file"));
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+import {
+  compressImageToDataUrl,
+  validateImageFile,
+  validateImagesTotalPayload,
+  BASE64_STORAGE_LIMITS,
+} from "@/lib/base64Image";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 export default function AdminNotices() {
   const { appUser } = useAuth();
@@ -143,21 +138,32 @@ export default function AdminNotices() {
 
   const handleAddImages = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (list.length === 0) {
-      toast({ title: "Invalid files", description: "Only image files are allowed.", variant: "destructive" });
-      return;
+    const list = Array.from(files);
+
+    // Validate each selected image
+    for (const f of list) {
+      const check = validateImageFile(f);
+      if (!check.valid) {
+        toast({
+          title: "Invalid image",
+          description: check.error || "Unsupported image file.",
+          variant: "destructive",
+        });
+        return;
+      }
     }
-    const tooLarge = list.find((f) => f.size > 500 * 1024);
-    if (tooLarge) {
-      toast({
-        title: "Image too large",
-        description: "Each image must be under 500KB for fast loading.",
-        variant: "destructive",
-      });
-      return;
-    }
-    setImages((prev) => [...prev, ...list.map((f) => ({ file: f, name: f.name }))].slice(0, 3));
+
+    setImages((prev) => {
+      const merged = [...prev, ...list.map((f) => ({ file: f, name: f.name }))];
+      if (merged.length > BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument) {
+        toast({
+          title: "Attachment limit",
+          description: `You can attach up to ${BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument} images per notice.`,
+          variant: "destructive",
+        });
+      }
+      return merged.slice(0, BASE64_STORAGE_LIMITS.maxAttachmentsPerDocument);
+    });
   };
 
   const handleRemoveImage = (index: number) => {
@@ -178,13 +184,26 @@ export default function AdminNotices() {
     setSaving(true);
 
     try {
-      // Convert images to data URLs
+      // Compress each image before creating the Base64 payload
       const encodedImages = await Promise.all(
-        images.map(async (img) => ({
-          name: img.name,
-          dataUrl: await fileToDataUrl(img.file),
-        })),
+        images.map(async (img) => {
+          const compressed = await compressImageToDataUrl(img.file);
+          return {
+            name: img.name,
+            dataUrl: compressed.dataUrl,
+            sizeBytes: compressed.sizeBytes,
+            mimeType: compressed.mimeType,
+          };
+        }),
       );
+
+      // Validate total payload against Firestore document limits
+      const payloadCheck = validateImagesTotalPayload(encodedImages);
+      if (!payloadCheck.valid) {
+        setFormError(payloadCheck.error || "Image attachments exceed size limit.");
+        setSaving(false);
+        return;
+      }
 
       const now = new Date().toISOString();
       const currentSessionName = workingSession?.name || activeSession?.name || "2026-27";
@@ -437,10 +456,10 @@ export default function AdminNotices() {
                         <div
                           key={idx}
                           className="relative group rounded-lg overflow-hidden border border-slate-200 w-24 h-24 cursor-pointer"
-                          onClick={() => setPreviewImage(img.dataUrl)}
+                          onClick={() => setPreviewImage(resolveFileUrl(img.dataUrl))}
                         >
                           <img
-                            src={img.dataUrl}
+                            src={resolveFileUrl(img.dataUrl)}
                             alt={img.name || `Attachment ${idx + 1}`}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                           />

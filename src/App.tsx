@@ -107,7 +107,7 @@ function Router() {
       <Route path="/admin/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["admin"]} />} />
       <Route path="/admin/hall-tickets" component={() => <ProtectedRoute component={HallTickets} roles={["admin"]} />} />
       <Route path="/admin/signatures" component={() => <ProtectedRoute component={Signatures} roles={["admin"]} />} />
-      <Route path="/my-signature" component={() => <ProtectedRoute component={MySignature} roles={["hod", "class_teacher"]} />} />
+      <Route path="/my-signature" component={() => <ProtectedRoute component={MySignature} roles={["admin", "hod", "teacher"]} />} />
       <Route path="/printing" component={() => <ProtectedRoute component={PrintingDashboard} roles={["printing", "operations", "admin"]} />} />
       <Route path="/printing/orders" component={() => <ProtectedRoute component={PrintingOrders} roles={["teacher", "hod", "admin"]} />} />
       <Route path="/library" component={() => <ProtectedRoute component={LibraryManagement} roles={["operations", "admin", "teacher", "hod"]} />} />

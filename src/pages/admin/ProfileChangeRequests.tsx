@@ -4,6 +4,7 @@ import {
   CheckCircle2, XCircle, AlertCircle, Clock, Filter,
   User, FileText, ExternalLink, MessageSquare, RefreshCw
 } from "lucide-react";
+import { resolveFileUrl } from "@/lib/objectStorage";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -178,11 +179,11 @@ function ReviewDialog({
               <p className="text-xs text-muted-foreground mb-0.5">Reason</p>
               <p className="text-sm">{request.reason}</p>
             </div>
-            {request.supportingDocUrl && (
+            {request.supportingDocUrl && resolveFileUrl(request.supportingDocUrl) && (
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Supporting Document</p>
                 <a
-                  href={request.supportingDocUrl}
+                  href={resolveFileUrl(request.supportingDocUrl)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-primary/5 border border-primary/15 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"

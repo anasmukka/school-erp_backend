@@ -10,8 +10,7 @@ import {
   orderBy,
   addDoc,
 } from "firebase/firestore";
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-import { db, storage } from "./firebase";
+import { db } from "./firebase";
 import { logAcademicAudit } from "./audit";
 
 // ============================================================
@@ -111,22 +110,47 @@ export interface SignatureVersion {
  */
 export interface SignatureRecord {
   id: string;               // = userId (Firebase Auth UID)
-  userId: string;           // Firebase Auth UID
+  userId: string;           // Firebase Auth UID (authoritative owner)
   staffId?: string;         // ERP staff Firestore document ID (may differ from Auth UID)
-  role: SignatoryRole;
-  name: string;             // Display name of the signatory
+  displayName?: string;     // Full display name of the signatory
+  name: string;             // Display name (for backward compatibility)
+  email?: string;           // Verified email address
+  currentRole?: string;     // Current ERP role in /users (admin, hod, teacher)
+  role: SignatoryRole;      // Signatory role ('admin' | 'hod' | 'class_teacher')
   designation: string;      // Print label: "Principal", "Head of Department", "Class Teacher"
-  imageUrl: string;         // Current active signature image download URL (denormalized for fast reads)
+  signatureImageUrl?: string; // Active signature image URL (alias to imageUrl)
+  imageUrl: string;         // Current active signature image download URL
+  signatureStorageKey?: string; // Storage path in bucket/R2
+  signatureVersion?: number;// Active signature version number (alias to activeVersionNumber)
   activeVersionId: string;  // Points to the current SignatureVersion versionId
   activeVersionNumber: number;
-  status: SignatureStatus;
+  isEligible: boolean;      // Explicit admin-controlled eligibility flag
+  isActive: boolean;        // Activation status flag
+  status: SignatureStatus;  // "active" | "deactivated"
   authorizedDocumentTypes: OfficialDocumentType[];
-  authorizedBy: string;     // Admin UID who authorized this signature
+  assignedBy?: string;      // Admin UID who granted authorization
+  assignedByName?: string;  // Admin display name
+  assignedAt?: string;      // ISO timestamp when authorized
+  authorizedBy: string;     // Admin UID (backward compatibility)
   authorizedByName?: string;
-  authorizedAt: string;
+  authorizedAt: string;     // ISO timestamp (backward compatibility)
+  createdAt?: string;
+  updatedAt: string;
   history: SignatureAuditEntry[];
   versions: SignatureVersion[];  // All uploaded versions, newest first
-  updatedAt: string;
+}
+
+/**
+ * Immutable snapshot of a signature captured when a document is finalized/published.
+ * Rendered onto documents without dependency on mutable live signature records.
+ */
+export interface DocumentSignatureSnapshot {
+  signatoryUid: string;
+  displayName: string;
+  designation: string;
+  versionNumber: number;
+  imageUrl: string;
+  signedAt: string;
 }
 
 // ============================================================
@@ -270,23 +294,43 @@ export async function getSignatures(filters?: {
     let results: SignatureRecord[] = snap.docs
       .map((d) => {
         const data = d.data();
+        const activeStatus = (data.status || "active") as SignatureStatus;
+        const isEligible = data.isEligible !== undefined ? !!data.isEligible : (activeStatus === "active");
+        const isActive = data.isActive !== undefined ? !!data.isActive : (activeStatus === "active");
+        const activeVerNum = data.activeVersionNumber || data.signatureVersion || 1;
+        const imgUrl = data.imageUrl || data.signatureImageUrl || "";
+
         return {
           ...data,
           id: d.id,
           userId: data.userId || d.id,
+          displayName: data.displayName || data.name || "",
+          name: data.name || data.displayName || "",
+          email: data.email || "",
+          currentRole: data.currentRole || data.role || "teacher",
           role: data.role || "admin",
-          name: data.name || "",
           designation: data.designation || "",
-          imageUrl: data.imageUrl || "",
+          imageUrl: imgUrl,
+          signatureImageUrl: imgUrl,
+          signatureStorageKey: data.signatureStorageKey || data.storagePath || "",
+          signatureVersion: activeVerNum,
           activeVersionId: data.activeVersionId || "",
-          activeVersionNumber: data.activeVersionNumber || 1,
-          status: data.status || "active",
-          authorizedDocumentTypes: data.authorizedDocumentTypes || ["report_card"],
-          authorizedBy: data.authorizedBy || "",
-          authorizedByName: data.authorizedByName || "",
-          authorizedAt: data.authorizedAt || data.updatedAt || "",
-          history: data.history || [],
-          versions: data.versions || [],
+          activeVersionNumber: activeVerNum,
+          isEligible,
+          isActive,
+          status: activeStatus,
+          authorizedDocumentTypes: Array.isArray(data.authorizedDocumentTypes)
+            ? data.authorizedDocumentTypes
+            : ["report_card"],
+          assignedBy: data.assignedBy || data.authorizedBy || "",
+          assignedByName: data.assignedByName || data.authorizedByName || "",
+          assignedAt: data.assignedAt || data.authorizedAt || data.updatedAt || "",
+          authorizedBy: data.authorizedBy || data.assignedBy || "",
+          authorizedByName: data.authorizedByName || data.assignedByName || "",
+          authorizedAt: data.authorizedAt || data.assignedAt || data.updatedAt || "",
+          history: Array.isArray(data.history) ? data.history : [],
+          versions: Array.isArray(data.versions) ? data.versions : [],
+          createdAt: data.createdAt || data.authorizedAt || data.updatedAt || "",
           updatedAt: data.updatedAt || "",
         } as SignatureRecord;
       })
@@ -314,9 +358,47 @@ export async function getSignatureForUser(userId: string): Promise<SignatureReco
   try {
     const snap = await getDoc(doc(db, "signatures", userId));
     if (!snap.exists()) return null;
-    const data = snap.data() as SignatureRecord;
+    const data = snap.data();
     if (!["admin", "hod", "class_teacher"].includes(data.role)) return null;
-    return { ...data, id: snap.id };
+    const activeStatus = (data.status || "active") as SignatureStatus;
+    const isEligible = data.isEligible !== undefined ? !!data.isEligible : (activeStatus === "active");
+    const isActive = data.isActive !== undefined ? !!data.isActive : (activeStatus === "active");
+    const activeVerNum = data.activeVersionNumber || data.signatureVersion || 1;
+    const imgUrl = data.imageUrl || data.signatureImageUrl || "";
+
+    return {
+      ...data,
+      id: snap.id,
+      userId: data.userId || snap.id,
+      displayName: data.displayName || data.name || "",
+      name: data.name || data.displayName || "",
+      email: data.email || "",
+      currentRole: data.currentRole || data.role || "teacher",
+      role: data.role || "admin",
+      designation: data.designation || "",
+      imageUrl: imgUrl,
+      signatureImageUrl: imgUrl,
+      signatureStorageKey: data.signatureStorageKey || data.storagePath || "",
+      signatureVersion: activeVerNum,
+      activeVersionId: data.activeVersionId || "",
+      activeVersionNumber: activeVerNum,
+      isEligible,
+      isActive,
+      status: activeStatus,
+      authorizedDocumentTypes: Array.isArray(data.authorizedDocumentTypes)
+        ? data.authorizedDocumentTypes
+        : ["report_card"],
+      assignedBy: data.assignedBy || data.authorizedBy || "",
+      assignedByName: data.assignedByName || data.authorizedByName || "",
+      assignedAt: data.assignedAt || data.authorizedAt || data.updatedAt || "",
+      authorizedBy: data.authorizedBy || data.assignedBy || "",
+      authorizedByName: data.authorizedByName || data.assignedByName || "",
+      authorizedAt: data.authorizedAt || data.assignedAt || data.updatedAt || "",
+      history: Array.isArray(data.history) ? data.history : [],
+      versions: Array.isArray(data.versions) ? data.versions : [],
+      createdAt: data.createdAt || data.authorizedAt || data.updatedAt || "",
+      updatedAt: data.updatedAt || "",
+    } as SignatureRecord;
   } catch {
     return null;
   }
@@ -337,7 +419,47 @@ export async function getActiveSignatureForRole(
     );
     const snap = await getDocs(q);
     if (snap.empty) return null;
-    return { id: snap.docs[0].id, ...snap.docs[0].data() } as SignatureRecord;
+    const match = snap.docs.find((d) => {
+      const data = d.data();
+      return data.isEligible !== false && (data.imageUrl || data.signatureImageUrl);
+    });
+    if (!match) return null;
+    const data = match.data();
+    const activeVerNum = data.activeVersionNumber || data.signatureVersion || 1;
+    const imgUrl = data.imageUrl || data.signatureImageUrl || "";
+    return {
+      id: match.id,
+      ...data,
+      userId: data.userId || match.id,
+      displayName: data.displayName || data.name || "",
+      name: data.name || data.displayName || "",
+      email: data.email || "",
+      currentRole: data.currentRole || data.role || "teacher",
+      role: data.role || role,
+      designation: data.designation || "",
+      imageUrl: imgUrl,
+      signatureImageUrl: imgUrl,
+      signatureStorageKey: data.signatureStorageKey || data.storagePath || "",
+      signatureVersion: activeVerNum,
+      activeVersionId: data.activeVersionId || "",
+      activeVersionNumber: activeVerNum,
+      isEligible: data.isEligible !== false,
+      isActive: data.isActive !== false && (data.status === "active"),
+      status: "active",
+      authorizedDocumentTypes: Array.isArray(data.authorizedDocumentTypes)
+        ? data.authorizedDocumentTypes
+        : ["report_card"],
+      assignedBy: data.assignedBy || data.authorizedBy || "",
+      assignedByName: data.assignedByName || data.authorizedByName || "",
+      assignedAt: data.assignedAt || data.authorizedAt || data.updatedAt || "",
+      authorizedBy: data.authorizedBy || data.assignedBy || "",
+      authorizedByName: data.authorizedByName || data.assignedByName || "",
+      authorizedAt: data.authorizedAt || data.assignedAt || data.updatedAt || "",
+      history: Array.isArray(data.history) ? data.history : [],
+      versions: Array.isArray(data.versions) ? data.versions : [],
+      createdAt: data.createdAt || data.authorizedAt || data.updatedAt || "",
+      updatedAt: data.updatedAt || "",
+    } as SignatureRecord;
   } catch (err) {
     console.error("getActiveSignatureForRole failed:", role, err);
     return null;
@@ -404,10 +526,27 @@ export async function publishSignatureVersion(
     throw new Error("Unauthorized: Only Admin, HOD, and Class Teacher roles may have signatures.");
   }
 
+  const existingDoc = await getDoc(doc(db, "signatures", params.userId));
+  const existing = existingDoc.exists()
+    ? (existingDoc.data() as SignatureRecord)
+    : null;
+
+  // Ineligible non-admin users CANNOT self-activate or create signatures
+  if (!isAdmin) {
+    if (!existing || !existing.isEligible) {
+      throw new Error("Unauthorized: Signature eligibility has not been granted by an Administrator.");
+    }
+    if (existing.status !== "active" || existing.isActive === false) {
+      throw new Error("Unauthorized: Your signature profile is currently deactivated. Please contact an Administrator.");
+    }
+  }
+
   // Document type permission check
-  const invalidDocs = params.authorizedDocumentTypes.filter(
-    (d) => !canSignDocument(params.role, d)
-  );
+  const requestedDocs = isAdmin
+    ? params.authorizedDocumentTypes
+    : (existing?.authorizedDocumentTypes ?? params.authorizedDocumentTypes);
+
+  const invalidDocs = requestedDocs.filter((d) => !canSignDocument(params.role, d));
   if (invalidDocs.length > 0) {
     throw new Error(
       `Role '${params.role}' is not permitted to sign: ${invalidDocs.join(", ")}.`
@@ -415,11 +554,6 @@ export async function publishSignatureVersion(
   }
 
   const now = new Date().toISOString();
-  const existingDoc = await getDoc(doc(db, "signatures", params.userId));
-  const existing = existingDoc.exists()
-    ? (existingDoc.data() as SignatureRecord)
-    : null;
-
   const existingVersions: SignatureVersion[] = existing?.versions ?? [];
   const nextVersionNumber = existingVersions.length + 1;
   const versionId = `v${nextVersionNumber}_${Date.now().toString(36)}`;
@@ -456,19 +590,31 @@ export async function publishSignatureVersion(
     id: params.userId,
     userId: params.userId,
     staffId: params.staffId || existing?.staffId || params.userId,
-    role: params.role,
+    displayName: params.name,
     name: params.name,
+    email: existing?.email || "",
+    currentRole: existing?.currentRole || params.role,
+    role: params.role,
     designation: params.designation,
     imageUrl: params.downloadUrl,
+    signatureImageUrl: params.downloadUrl,
+    signatureStorageKey: params.storagePath,
+    signatureVersion: nextVersionNumber,
     activeVersionId: versionId,
     activeVersionNumber: nextVersionNumber,
+    isEligible: existing ? existing.isEligible : (isAdmin ? true : false),
+    isActive: existing ? (existing.isActive !== false && existing.status === "active") : (isAdmin ? true : false),
     status: existing?.status ?? "active",
-    authorizedDocumentTypes: params.authorizedDocumentTypes,
+    authorizedDocumentTypes: requestedDocs,
+    assignedBy: isAdmin ? actor.uid : existing?.assignedBy ?? actor.uid,
+    assignedByName: isAdmin ? actor.name : existing?.assignedByName ?? actor.name,
+    assignedAt: isAdmin ? now : existing?.assignedAt ?? now,
     authorizedBy: isAdmin ? actor.uid : existing?.authorizedBy ?? actor.uid,
     authorizedByName: isAdmin ? actor.name : existing?.authorizedByName ?? actor.name,
     authorizedAt: isAdmin ? now : existing?.authorizedAt ?? now,
     history: [...(existing?.history ?? []), auditEntry],
     versions: updatedVersions,
+    createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
 
@@ -483,7 +629,7 @@ export async function publishSignatureVersion(
       versionId,
       versionNumber: nextVersionNumber,
       role: params.role,
-      authorizedDocs: params.authorizedDocumentTypes,
+      authorizedDocs: requestedDocs,
     },
     performedBy: {
       uid: actor.uid,
@@ -495,7 +641,7 @@ export async function publishSignatureVersion(
 
 /**
  * Updates metadata on a signature profile (name, designation, authorized docs).
- * Does NOT replace the signature image; use publishSignatureVersion for that.
+ * Non-admins cannot modify authorizedDocumentTypes.
  */
 export async function updateSignatureMetadata(
   userId: string,
@@ -511,6 +657,10 @@ export async function updateSignatureMetadata(
 
   if (!isAdmin && !isSelf) {
     throw new Error("Unauthorized: You can only manage your own signature.");
+  }
+
+  if (!isAdmin && updates.authorizedDocumentTypes !== undefined) {
+    throw new Error("Unauthorized: Only Administrators can configure authorized document types.");
   }
 
   const existing = await getSignatureForUser(userId);
@@ -531,7 +681,7 @@ export async function updateSignatureMetadata(
 
   const now = new Date().toISOString();
   await updateDoc(doc(db, "signatures", userId), {
-    ...(updates.name !== undefined && { name: updates.name }),
+    ...(updates.name !== undefined && { name: updates.name, displayName: updates.name }),
     ...(updates.designation !== undefined && { designation: updates.designation }),
     ...(updates.authorizedDocumentTypes !== undefined && {
       authorizedDocumentTypes: updates.authorizedDocumentTypes,
@@ -571,6 +721,7 @@ export async function toggleSignatureStatus(
 
   await updateDoc(doc(db, "signatures", userId), {
     status: newStatus,
+    isActive: newStatus === "active",
     history: [...(existing.history ?? []), auditEntry],
     updatedAt: now,
   });
@@ -580,13 +731,497 @@ export async function toggleSignatureStatus(
     module: "signatures",
     targetId: userId,
     targetName: `Signature Status (${existing.name}) → ${newStatus}`,
-    details: { status: newStatus, reason },
+    details: { status: newStatus, isActive: newStatus === "active", reason },
     performedBy: {
       uid: actor.uid,
       name: actor.name,
       role: actor.role as any,
     },
   });
+}
+
+/**
+ * Admin grants signature eligibility to an individual staff/user account.
+ * Explicitly configures permitted document types.
+ */
+export async function grantSignatureEligibility(
+  params: {
+    userId: string;
+    displayName: string;
+    email?: string;
+    currentRole?: string;
+    role: SignatoryRole;
+    designation: string;
+    authorizedDocumentTypes: OfficialDocumentType[];
+    staffId?: string;
+    imageUrl?: string;
+    storagePath?: string;
+  },
+  adminActor: { uid: string; name: string; role: string }
+): Promise<void> {
+  if (adminActor.role !== "admin") {
+    throw new Error("Unauthorized: Only Administrators can grant signature eligibility.");
+  }
+
+  const invalidDocs = params.authorizedDocumentTypes.filter((d) => !canSignDocument(params.role, d));
+  if (invalidDocs.length > 0) {
+    throw new Error(`Role '${params.role}' is not permitted to sign: ${invalidDocs.join(", ")}.`);
+  }
+
+  const now = new Date().toISOString();
+  const existingDoc = await getDoc(doc(db, "signatures", params.userId));
+  const existing = existingDoc.exists() ? (existingDoc.data() as SignatureRecord) : null;
+
+  const auditEntry: SignatureAuditEntry = {
+    action: "authorized",
+    performedByUid: adminActor.uid,
+    performedByName: adminActor.name,
+    timestamp: now,
+    notes: `Signature eligibility granted by Admin ${adminActor.name}. Allowed: ${params.authorizedDocumentTypes.join(", ")}`,
+  };
+
+  const payload: SignatureRecord = {
+    id: params.userId,
+    userId: params.userId,
+    staffId: params.staffId || existing?.staffId || params.userId,
+    displayName: params.displayName.trim(),
+    name: params.displayName.trim(),
+    email: params.email || existing?.email || "",
+    currentRole: params.currentRole || existing?.currentRole || params.role,
+    role: params.role,
+    designation: params.designation.trim(),
+    imageUrl: params.imageUrl || existing?.imageUrl || "",
+    signatureImageUrl: params.imageUrl || existing?.signatureImageUrl || existing?.imageUrl || "",
+    signatureStorageKey: params.storagePath || existing?.signatureStorageKey || "",
+    signatureVersion: existing?.signatureVersion || existing?.activeVersionNumber || 1,
+    activeVersionId: existing?.activeVersionId || "",
+    activeVersionNumber: existing?.activeVersionNumber || 1,
+    isEligible: true,
+    isActive: true,
+    status: "active",
+    authorizedDocumentTypes: params.authorizedDocumentTypes,
+    assignedBy: adminActor.uid,
+    assignedByName: adminActor.name,
+    assignedAt: now,
+    authorizedBy: adminActor.uid,
+    authorizedByName: adminActor.name,
+    authorizedAt: now,
+    history: [...(existing?.history ?? []), auditEntry],
+    versions: existing?.versions ?? [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  };
+
+  await setDoc(doc(db, "signatures", params.userId), payload);
+
+  await logAcademicAudit({
+    action: "create",
+    module: "signatures",
+    targetId: params.userId,
+    targetName: `Signature Eligibility Granted for ${params.displayName} (${params.role})`,
+    details: {
+      userId: params.userId,
+      role: params.role,
+      authorizedDocs: params.authorizedDocumentTypes,
+      grantedBy: adminActor.name,
+    },
+    performedBy: {
+      uid: adminActor.uid,
+      name: adminActor.name,
+      role: adminActor.role as any,
+    },
+  });
+}
+
+/**
+ * Admin revokes signature eligibility from an account.
+ */
+export async function revokeSignatureEligibility(
+  userId: string,
+  reason: string,
+  adminActor: { uid: string; name: string; role: string }
+): Promise<void> {
+  if (adminActor.role !== "admin") {
+    throw new Error("Unauthorized: Only Administrators can revoke signature eligibility.");
+  }
+
+  const existingDoc = await getDoc(doc(db, "signatures", userId));
+  if (!existingDoc.exists()) {
+    throw new Error("Signature profile not found.");
+  }
+
+  const existing = existingDoc.data() as SignatureRecord;
+  const now = new Date().toISOString();
+
+  const auditEntry: SignatureAuditEntry = {
+    action: "deactivate",
+    performedByUid: adminActor.uid,
+    performedByName: adminActor.name,
+    timestamp: now,
+    notes: `Signature eligibility revoked by Admin: ${reason}`,
+  };
+
+  await updateDoc(doc(db, "signatures", userId), {
+    isEligible: false,
+    isActive: false,
+    status: "deactivated",
+    history: [...(existing.history ?? []), auditEntry],
+    updatedAt: now,
+  });
+
+  await logAcademicAudit({
+    action: "status_change",
+    module: "signatures",
+    targetId: userId,
+    targetName: `Signature Eligibility Revoked for ${existing.name || existing.displayName}`,
+    details: { isEligible: false, reason },
+    performedBy: {
+      uid: adminActor.uid,
+      name: adminActor.name,
+      role: adminActor.role as any,
+    },
+  });
+}
+
+/**
+ * Admin updates permitted document types for an authorized signatory.
+ */
+export async function updateUserSignaturePermissions(
+  userId: string,
+  authorizedDocumentTypes: OfficialDocumentType[],
+  adminActor: { uid: string; name: string; role: string }
+): Promise<void> {
+  if (adminActor.role !== "admin") {
+    throw new Error("Unauthorized: Only Administrators can configure signatory permissions.");
+  }
+
+  const existing = await getSignatureForUser(userId);
+  if (!existing) {
+    throw new Error("Signature profile not found.");
+  }
+
+  const invalidDocs = authorizedDocumentTypes.filter((d) => !canSignDocument(existing.role, d));
+  if (invalidDocs.length > 0) {
+    throw new Error(`Role '${existing.role}' is not permitted to sign: ${invalidDocs.join(", ")}.`);
+  }
+
+  const now = new Date().toISOString();
+  await updateDoc(doc(db, "signatures", userId), {
+    authorizedDocumentTypes,
+    updatedAt: now,
+  });
+}
+
+/**
+ * Verifies whether a user has an active, authorized signature profile for a document type.
+ */
+export async function verifySignerEligibility(
+  userId: string,
+  documentType: OfficialDocumentType
+): Promise<{ eligible: boolean; reason?: string; signature?: SignatureRecord }> {
+  const sig = await getSignatureForUser(userId);
+  if (!sig) {
+    return { eligible: false, reason: "No signature profile registered for user." };
+  }
+  if (!sig.isEligible) {
+    return { eligible: false, reason: "User has not been granted signature eligibility by Administrator." };
+  }
+  if (!sig.isActive || sig.status !== "active") {
+    return { eligible: false, reason: "Signature profile is currently deactivated." };
+  }
+  if (!sig.authorizedDocumentTypes?.includes(documentType)) {
+    return { eligible: false, reason: `User is not authorized to sign ${documentType}.` };
+  }
+  if (!sig.imageUrl && !sig.signatureImageUrl) {
+    return { eligible: false, reason: "User has not uploaded an active signature image." };
+  }
+  return { eligible: true, signature: sig };
+}
+
+/**
+ * Enforces student-specific and section-specific signing authorization for Report Cards.
+ * Verifies that the signer is specifically assigned to the student's section as Class Teacher or HOD,
+ * or is an authorized Admin (Principal).
+ */
+export async function verifyStudentReportCardSigner(params: {
+  signerUid: string;
+  signatoryRole: SignatoryRole;
+  studentId?: string;
+  studentUid?: string;
+  sectionId?: string;
+  sessionId?: string;
+}): Promise<{ authorized: boolean; reason?: string; snapshot?: DocumentSignatureSnapshot }> {
+  // 1. Verify profile eligibility
+  const check = await verifySignerEligibility(params.signerUid, "report_card");
+  if (!check.eligible || !check.signature) {
+    return { authorized: false, reason: check.reason || "Signer is not eligible to sign report cards." };
+  }
+
+  const sig = check.signature;
+
+  // 2. Admin (Principal) check
+  if (params.signatoryRole === "admin") {
+    if (sig.role !== "admin") {
+      return { authorized: false, reason: "Only an authorized Admin account can sign in the Principal slot." };
+    }
+    return {
+      authorized: true,
+      snapshot: {
+        signatoryUid: params.signerUid,
+        displayName: sig.name || sig.displayName || "Principal",
+        designation: sig.designation || "Principal",
+        versionNumber: sig.activeVersionNumber || sig.signatureVersion || 1,
+        imageUrl: sig.imageUrl || sig.signatureImageUrl || "",
+        signedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  // 3. For Class Teacher or HOD: resolve section to verify assignment
+  let targetSectionId = params.sectionId;
+  if (!targetSectionId && (params.studentId || params.studentUid)) {
+    try {
+      const enrQ = query(
+        collection(db, "enrollments"),
+        where("studentUid", "==", params.studentUid || params.studentId)
+      );
+      const enrSnap = await getDocs(enrQ);
+      if (!enrSnap.empty) {
+        targetSectionId = enrSnap.docs[0].data().sectionId;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!targetSectionId) {
+    return { authorized: false, reason: "Cannot determine student section to verify signatory assignment." };
+  }
+
+  let sectionData: any = null;
+  try {
+    const secDoc = await getDoc(doc(db, "sections", targetSectionId));
+    if (secDoc.exists()) {
+      sectionData = secDoc.data();
+    }
+  } catch {
+    return { authorized: false, reason: `Could not retrieve section record: ${targetSectionId}.` };
+  }
+
+  if (!sectionData) {
+    return { authorized: false, reason: `Section record not found: ${targetSectionId}.` };
+  }
+
+  // Class Teacher assignment check
+  if (params.signatoryRole === "class_teacher") {
+    let isAssigned = false;
+    if (sectionData.classTeacherId === params.signerUid) {
+      isAssigned = true;
+    } else if (sectionData.classTeacherId) {
+      try {
+        const tDoc = await getDoc(doc(db, "teachers", sectionData.classTeacherId));
+        if (tDoc.exists()) {
+          const tData = tDoc.data();
+          if (tData.uid === params.signerUid || tDoc.id === params.signerUid) {
+            isAssigned = true;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!isAssigned) {
+      return {
+        authorized: false,
+        reason: `User is not the assigned Class Teacher for section '${sectionData.name || targetSectionId}'.`,
+      };
+    }
+
+    return {
+      authorized: true,
+      snapshot: {
+        signatoryUid: params.signerUid,
+        displayName: sig.name || sig.displayName || "Class Teacher",
+        designation: sig.designation || `Class Teacher - ${sectionData.name || ""}`.trim(),
+        versionNumber: sig.activeVersionNumber || sig.signatureVersion || 1,
+        imageUrl: sig.imageUrl || sig.signatureImageUrl || "",
+        signedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  // HOD assignment check
+  if (params.signatoryRole === "hod") {
+    let isAssigned = false;
+    if (sectionData.hodId === params.signerUid) {
+      isAssigned = true;
+    } else {
+      if (sectionData.classTeacherId) {
+        try {
+          const tDoc = await getDoc(doc(db, "teachers", sectionData.classTeacherId));
+          if (tDoc.exists() && Array.isArray(tDoc.data().hodIds) && tDoc.data().hodIds.includes(params.signerUid)) {
+            isAssigned = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (!isAssigned) {
+      return {
+        authorized: false,
+        reason: `User is not the assigned Head of Department (HOD) for section '${sectionData.name || targetSectionId}'.`,
+      };
+    }
+
+    return {
+      authorized: true,
+      snapshot: {
+        signatoryUid: params.signerUid,
+        displayName: sig.name || sig.displayName || "Head of Department",
+        designation: sig.designation || "Section Head / HOD",
+        versionNumber: sig.activeVersionNumber || sig.signatureVersion || 1,
+        imageUrl: sig.imageUrl || sig.signatureImageUrl || "",
+        signedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  return { authorized: false, reason: `Unknown signatory role: ${params.signatoryRole}` };
+}
+
+/**
+ * Resolves all required report card signatories for a section and produces
+ * immutable signature snapshots. Blocks if assigned Class Teacher or Principal signature is missing.
+ */
+export async function resolveStudentReportCardSignatures(params: {
+  sectionId: string;
+  studentId?: string;
+  studentUid?: string;
+  sessionId?: string;
+}): Promise<{
+  ready: boolean;
+  missingSignatories: string[];
+  signatures: {
+    classTeacher?: DocumentSignatureSnapshot;
+    hod?: DocumentSignatureSnapshot;
+    principal?: DocumentSignatureSnapshot;
+  };
+}> {
+  const missing: string[] = [];
+  const signatures: {
+    classTeacher?: DocumentSignatureSnapshot;
+    hod?: DocumentSignatureSnapshot;
+    principal?: DocumentSignatureSnapshot;
+  } = {};
+
+  let secData: any = null;
+  try {
+    const secDoc = await getDoc(doc(db, "sections", params.sectionId));
+    if (secDoc.exists()) secData = secDoc.data();
+  } catch {
+    // ignore
+  }
+
+  if (!secData) {
+    return {
+      ready: false,
+      missingSignatories: ["Section record not found"],
+      signatures: {},
+    };
+  }
+
+  // 1. Resolve Class Teacher
+  if (!secData.classTeacherId) {
+    missing.push("Class Teacher (no teacher assigned to section)");
+  } else {
+    let teacherUid = secData.classTeacherId;
+    let teacherName = "Class Teacher";
+    try {
+      const tDoc = await getDoc(doc(db, "teachers", secData.classTeacherId));
+      if (tDoc.exists()) {
+        const td = tDoc.data();
+        teacherUid = td.uid || secData.classTeacherId;
+        teacherName = td.name || teacherName;
+      }
+    } catch {
+      // ignore
+    }
+
+    const ctVerify = await verifyStudentReportCardSigner({
+      signerUid: teacherUid,
+      signatoryRole: "class_teacher",
+      sectionId: params.sectionId,
+      studentId: params.studentId,
+      studentUid: params.studentUid,
+    });
+
+    if (ctVerify.authorized && ctVerify.snapshot) {
+      signatures.classTeacher = ctVerify.snapshot;
+    } else {
+      missing.push(`Class Teacher (${teacherName}: ${ctVerify.reason || "Not authorized / signature missing"})`);
+    }
+  }
+
+  // 2. Resolve HOD (Optional or Required per document config)
+  if (secData.hodId) {
+    const hodVerify = await verifyStudentReportCardSigner({
+      signerUid: secData.hodId,
+      signatoryRole: "hod",
+      sectionId: params.sectionId,
+      studentId: params.studentId,
+      studentUid: params.studentUid,
+    });
+
+    if (hodVerify.authorized && hodVerify.snapshot) {
+      signatures.hod = hodVerify.snapshot;
+    } else {
+      missing.push(`HOD (${hodVerify.reason || "Not authorized / signature missing"})`);
+    }
+  }
+
+  // 3. Resolve Admin as Principal
+  try {
+    const adminQ = query(
+      collection(db, "signatures"),
+      where("role", "==", "admin"),
+      where("status", "==", "active")
+    );
+    const adminSnap = await getDocs(adminQ);
+    let foundAdmin = false;
+    for (const d of adminSnap.docs) {
+      const data = d.data() as SignatureRecord;
+      if (
+        data.isEligible !== false &&
+        data.authorizedDocumentTypes?.includes("report_card") &&
+        (data.imageUrl || data.signatureImageUrl)
+      ) {
+        signatures.principal = {
+          signatoryUid: d.id,
+          displayName: data.name || data.displayName || "Principal",
+          designation: data.designation || "Principal",
+          versionNumber: data.activeVersionNumber || data.signatureVersion || 1,
+          imageUrl: data.imageUrl || data.signatureImageUrl || "",
+          signedAt: new Date().toISOString(),
+        };
+        foundAdmin = true;
+        break;
+      }
+    }
+    if (!foundAdmin) {
+      missing.push("Principal (no eligible, active Admin signature with 'report_card' authorization)");
+    }
+  } catch {
+    missing.push("Principal signature could not be verified");
+  }
+
+  return {
+    ready: missing.length === 0,
+    missingSignatories: missing,
+    signatures,
+  };
 }
 
 // ============================================================

@@ -95,7 +95,7 @@ export function authorizeResourceAccess(
       // Authorized signers: Admin, HOD, Class Teacher
       // Write: Admin can manage all. HOD & Class Teacher can ONLY manage their OWN signature!
       if (mode === "write") {
-        if (role === "hod" || role === "class_teacher") {
+        if (role === "hod" || role === "class_teacher" || role === "teacher") {
           if (request.targetUserId && request.targetUserId !== user.uid) {
             return {
               authorized: false,
@@ -107,7 +107,7 @@ export function authorizeResourceAccess(
         return { authorized: false, reason: "Unauthorized to upload signature." };
       }
       if (mode === "read") {
-        if (["admin", "hod", "class_teacher"].includes(role)) {
+        if (["admin", "hod", "class_teacher", "teacher"].includes(role)) {
           return { authorized: true };
         }
         return { authorized: false, reason: "Unauthorized to view signatures." };

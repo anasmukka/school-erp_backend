@@ -496,6 +496,37 @@ export default function TeacherMarksEntry() {
     if (!selectedSection || !structureInfo || !appUser) return;
     try {
       setSaving(true);
+
+      // Validate all entered marks against configured actual maximum marks
+      for (const stu of students) {
+        const studentScores = marksState[stu.studentId] || {};
+        for (const comp of activeComponents) {
+          const entry = studentScores[comp.id];
+          if (entry && entry.status === "present" && entry.marks !== null && entry.marks !== undefined && entry.marks !== "") {
+            const num = Number(entry.marks);
+            const entryMax = comp.testedMaxMarks ?? comp.maxMarks;
+            if (num < 0) {
+              toast({
+                title: "Invalid Marks Entry",
+                description: `${stu.studentName}: ${comp.name} cannot have negative marks (${num}).`,
+                variant: "destructive",
+              });
+              setSaving(false);
+              return;
+            }
+            if (num > entryMax) {
+              toast({
+                title: "Invalid Marks Entry",
+                description: `${stu.studentName}: ${comp.name} marks (${num}) exceed configured maximum of ${entryMax}.`,
+                variant: "destructive",
+              });
+              setSaving(false);
+              return;
+            }
+          }
+        }
+      }
+
       const studentsPayload = students.map((stu) => ({
         studentUid: stu.studentUid,
         studentDocId: stu.studentDocId,
@@ -770,7 +801,7 @@ export default function TeacherMarksEntry() {
                     <th key={comp.id} className="py-3 px-2 text-center min-w-[100px]">
                       <div>{comp.name}</div>
                       <div className="text-[10px] font-normal text-muted-foreground font-mono">
-                        {comp.code} (/{comp.testedMaxMarks ?? comp.maxMarks})
+                        {comp.code} (Max: {comp.testedMaxMarks ?? comp.maxMarks})
                         {comp.calculationMethod === "scale_to_target" && (
                           <span className="block text-[8px] text-amber-600">
                             → {comp.scalingTargetMarks}M
@@ -838,12 +869,14 @@ export default function TeacherMarksEntry() {
                                 max={entryMax}
                                 disabled={isLocked}
                                 value={cellVal}
-                                onChange={(e) =>
-                                  handleScoreChange(stu.studentId, comp.id, e.target.value)
-                                }
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val !== "" && Number(val) < 0) return;
+                                  handleScoreChange(stu.studentId, comp.id, val);
+                                }}
                                 className={`h-8 text-center text-xs font-semibold mx-auto w-20 ${
-                                  Number(cellVal) > entryMax
-                                    ? "border-red-500 bg-red-50 text-red-700"
+                                  cellVal !== "" && (Number(cellVal) > entryMax || Number(cellVal) < 0)
+                                    ? "border-red-500 bg-red-50 text-red-700 ring-1 ring-red-400"
                                     : ""
                                 }`}
                               />

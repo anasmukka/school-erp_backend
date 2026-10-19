@@ -255,8 +255,9 @@ const sigRulesMatch = rulesSource.match(/match\s+\/signatures\/\{sigId\}\s*\{([\
 const sigRules = sigRulesMatch ? sigRulesMatch[1] : "";
 
 assert(
+  sigRules.includes("isAdmin() || getUserRole() in ['hod', 'teacher', 'class_teacher']") ||
   sigRules.includes("isAdmin() || getUserRole() in ['hod', 'class_teacher']"),
-  "TEST 25: signatures collection read restricted to Admin, HOD, and Class Teacher only"
+  "TEST 25: signatures collection read restricted to Admin, HOD, and Teacher/Class Teacher only"
 );
 
 assert(

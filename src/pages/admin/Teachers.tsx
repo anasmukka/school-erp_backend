@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { User as UserIcon, CheckSquare, Square, Trash2, Loader2, Plus, Users, Search, GraduationCap } from "lucide-react";
 import { SearchInput } from "@/components/ui/SearchInput";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 
@@ -381,8 +382,8 @@ export default function Teachers() {
                     <Card key={t.id} className="overflow-hidden hover:shadow-sm transition-shadow">
                       <CardContent className="pt-5">
                         <div className="flex items-center gap-3 mb-3">
-                          {t.photo ? (
-                            <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover border" />
+                          {t.photo && resolveFileUrl(t.photo) ? (
+                            <img src={resolveFileUrl(t.photo)} alt={t.name} className="w-10 h-10 rounded-full object-cover border" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
                               <UserIcon size={18} className="text-blue-500" />

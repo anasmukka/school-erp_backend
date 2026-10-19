@@ -657,9 +657,32 @@ export async function buildReportCardPdfDocument(
     }
   }
 
-  const ctSig = signatures["class_teacher"];
-  const hodSig = signatures["hod"];
-  const adminSig = signatures["admin"];
+  const ctSig = snapshot.signatures?.classTeacher
+    ? {
+        userId: (snapshot.signatures.classTeacher as any).signatoryUid || "snapshot-ct",
+        name: snapshot.signatures.classTeacher.name,
+        designation: (snapshot.signatures.classTeacher as any).designation || "Class Teacher",
+        imageUrl: snapshot.signatures.classTeacher.imageUrl || "",
+      }
+    : signatures["class_teacher"];
+
+  const hodSig = snapshot.signatures?.hod
+    ? {
+        userId: (snapshot.signatures.hod as any).signatoryUid || "snapshot-hod",
+        name: snapshot.signatures.hod.name,
+        designation: (snapshot.signatures.hod as any).designation || "Section Head / HOD",
+        imageUrl: snapshot.signatures.hod.imageUrl || "",
+      }
+    : signatures["hod"];
+
+  const adminSig = snapshot.signatures?.principal
+    ? {
+        userId: (snapshot.signatures.principal as any).signatoryUid || "snapshot-admin",
+        name: snapshot.signatures.principal.name,
+        designation: (snapshot.signatures.principal as any).designation || "Principal",
+        imageUrl: snapshot.signatures.principal.imageUrl || "",
+      }
+    : signatures["admin"];
 
   const ctCenterX = ML + sigW / 2;
   const hodCenterX = ML + sigW + sigW / 2;

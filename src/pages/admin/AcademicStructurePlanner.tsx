@@ -1270,6 +1270,8 @@ export default function AcademicStructurePlanner() {
                                     code: curTerm.id === "term_2" ? "ANN" : "HY",
                                     order: exams.length + 1,
                                     weightagePercentage: 50,
+                                    maxMarks: 70,
+                                    passingMarks: 25,
                                     assessmentComponentIds: components.map((c) => c.id),
                                   };
                                   setExams([...exams, newExam]);
@@ -1287,8 +1289,8 @@ export default function AcademicStructurePlanner() {
                                   key={ex.id}
                                   className="p-3 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                                 >
-                                  <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                                    <div>
+                                  <div className="flex-1 grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                                    <div className="col-span-2 sm:col-span-1">
                                       <Label className="text-[11px] font-medium text-muted-foreground">Exam Name</Label>
                                       <Input
                                         value={ex.name}
@@ -1314,7 +1316,35 @@ export default function AcademicStructurePlanner() {
                                       />
                                     </div>
                                     <div>
-                                      <Label className="text-[11px] font-medium text-muted-foreground">Term Weight %</Label>
+                                      <Label className="text-[11px] font-medium text-muted-foreground">Max Marks</Label>
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        value={ex.maxMarks ?? 70}
+                                        onChange={(e) => {
+                                          const updated = [...exams];
+                                          updated[overallIdx].maxMarks = Number(e.target.value) || 0;
+                                          setExams(updated);
+                                        }}
+                                        className="h-8 text-xs mt-0.5 font-semibold"
+                                      />
+                                    </div>
+                                    <div>
+                                      <Label className="text-[11px] font-medium text-muted-foreground">Passing Marks</Label>
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        value={ex.passingMarks ?? 25}
+                                        onChange={(e) => {
+                                          const updated = [...exams];
+                                          updated[overallIdx].passingMarks = Number(e.target.value) || 0;
+                                          setExams(updated);
+                                        }}
+                                        className="h-8 text-xs mt-0.5"
+                                      />
+                                    </div>
+                                    <div>
+                                      <Label className="text-[11px] font-medium text-muted-foreground">Weight %</Label>
                                       <Input
                                         type="number"
                                         value={ex.weightagePercentage}

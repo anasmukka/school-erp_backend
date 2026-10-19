@@ -15,6 +15,7 @@ import {
 } from "@/lib/enrollments";
 
 import { useToast } from "@/hooks/use-toast";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 export default function PendingStudents() {
   const { appUser } = useAuth();
@@ -120,8 +121,8 @@ export default function PendingStudents() {
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    {student.photo ? (
-                      <img src={student.photo} alt={student.name} className="w-10 h-10 rounded-full object-cover" />
+                    {student.photo && resolveFileUrl(student.photo) ? (
+                      <img src={resolveFileUrl(student.photo)} alt={student.name} className="w-10 h-10 rounded-full object-cover" />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
                         <UserIcon size={18} className="text-green-500" />

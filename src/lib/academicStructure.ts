@@ -60,6 +60,8 @@ export interface DefinedExam {
   term?: "term1" | "term2" | "full_year"; // legacy fallback
   order: number;
   weightagePercentage?: number; // legacy fallback
+  maxMarks?: number; // Configured explicit numeric maximum marks (e.g. 20, 70, 80, 100)
+  passingMarks?: number; // Configured explicit numeric passing marks (e.g. 7, 25, 28, 35)
   applicableComponentIds: string[]; // Component IDs that belong to this exam
 }
 

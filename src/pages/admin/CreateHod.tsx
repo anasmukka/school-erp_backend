@@ -4,6 +4,7 @@ import { db } from "@/lib/firebase";
 import { User } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { User as UserIcon } from "lucide-react";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 export default function CreateHod() {
   const [hods, setHods] = useState<User[]>([]);
@@ -48,8 +49,8 @@ export default function CreateHod() {
             <Card key={h.id}>
               <CardContent className="pt-5">
                 <div className="flex items-center gap-3 mb-3">
-                  {h.photo ? (
-                    <img src={h.photo} alt={h.name} className="w-10 h-10 rounded-full object-cover" />
+                  {h.photo && resolveFileUrl(h.photo) ? (
+                    <img src={resolveFileUrl(h.photo)} alt={h.name} className="w-10 h-10 rounded-full object-cover" />
                   ) : (
                     <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center">
                       <UserIcon size={18} className="text-violet-500" />

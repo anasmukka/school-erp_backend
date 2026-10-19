@@ -48,6 +48,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import jsPDF from "jspdf";
+import { PRESTIGE_LOGO_DATA_URL } from "@/lib/schoolLogoAsset";
 
 export default function ExamApprovals() {
   const { appUser } = useAuth();
@@ -215,16 +216,23 @@ export default function ExamApprovals() {
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
 
-    // Header
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(20);
-    pdf.setTextColor(30, 41, 59);
-    pdf.text("OFFICIAL EXAMINATION TIMETABLE", 105, 22, { align: "center" });
+    // Header with official Prestige Logo & Branding
+    try {
+      pdf.addImage(PRESTIGE_LOGO_DATA_URL, "PNG", 16, 12, 16, 16);
+    } catch { /* fallback */ }
 
-    pdf.setFontSize(11);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(13);
+    pdf.setTextColor(30, 41, 59);
+    pdf.text("PRESTIGE INTERNATIONAL SCHOOL", 110, 17, { align: "center" });
+
+    pdf.setFontSize(15);
+    pdf.text("OFFICIAL EXAMINATION TIMETABLE", 110, 24, { align: "center" });
+
+    pdf.setFontSize(9.5);
     pdf.setFont("helvetica", "normal");
     pdf.setTextColor(100, 116, 139);
-    pdf.text(`Academic Session: ${sched.academicYear || sched.sessionId}`, 105, 29, { align: "center" });
+    pdf.text(`Academic Session: ${sched.academicYear || sched.sessionId}`, 110, 30, { align: "center" });
 
     // Meta Box
     pdf.setDrawColor(226, 232, 240);

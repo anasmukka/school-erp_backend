@@ -7,6 +7,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Student, Subject, Teacher, SubjectAssignment, Section, User } from "@/lib/types";
 import { getActiveEnrollment, loadStudentsForSection } from "@/lib/enrollments";
 import { useAcademicSession } from "@/contexts/AcademicSessionContext";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 const DEFAULT_GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 import { Card, CardContent } from "@/components/ui/card";
@@ -500,8 +501,8 @@ export default function ClassManagement() {
                   <CardContent className="pt-4 pb-4">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {s.photo ? (
-                          <img src={s.photo} alt={s.name} className="w-9 h-9 rounded-full object-cover" />
+                        {s.photo && resolveFileUrl(s.photo) ? (
+                          <img src={resolveFileUrl(s.photo)} alt={s.name} className="w-9 h-9 rounded-full object-cover" />
                         ) : (
                           <div className="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center">
                             <UserIcon size={16} className="text-green-500" />
@@ -566,8 +567,8 @@ export default function ClassManagement() {
                     <CardContent className="pt-4 pb-4">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                          {t.photo ? (
-                            <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover" />
+                          {t.photo && resolveFileUrl(t.photo) ? (
+                            <img src={resolveFileUrl(t.photo)} alt={t.name} className="w-10 h-10 rounded-full object-cover" />
                           ) : (
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
                               <UserIcon size={18} className="text-blue-500" />

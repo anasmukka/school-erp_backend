@@ -56,8 +56,8 @@ import {
 } from "lucide-react";
 import { User } from "@/lib/types";
 import { getActiveAcademicSession } from "@/lib/sessions";
-import { getAcademicSession } from "@/lib/fees";
 import { SearchInput } from "@/components/ui/SearchInput";
+import { resolveFileUrl, isR2Configured } from "@/lib/objectStorage";
 
 export type AdmissionType = "student" | "teacher" | "accountant" | "hod" | "printing";
 export type AdmissionStatus = "pending" | "approved" | "shortlisted" | "rejected" | "documents_requested";
@@ -383,6 +383,18 @@ export default function Admissions() {
 
     try {
       const normalizedEmail = form.email.trim().toLowerCase();
+      const hasFilesToUpload = Boolean(form.photo || (form.documents && form.documents.length > 0));
+
+      if (hasFilesToUpload && !isR2Configured()) {
+        setError(
+          "Cloudflare R2 object storage is not configured (VITE_WORKER_URL is unset). " +
+            "Cannot upload student photo or documents. " +
+            "Remove file attachments to create the account, or configure object storage before proceeding."
+        );
+        setSaving(false);
+        return;
+      }
+
       let photoData = "";
       if (form.photo) {
         const { uploadObject } = await import("@/lib/objectStorage");
@@ -641,9 +653,16 @@ export default function Admissions() {
     });
 
   const downloadFile = (doc: DocumentEntry) => {
+    const resolvedUrl = resolveFileUrl(doc.fileData);
+    if (!resolvedUrl) {
+      alert("Cannot download file: Object storage is not configured (VITE_WORKER_URL is unset).");
+      return;
+    }
     const link = document.createElement("a");
-    link.href = doc.fileData;
+    link.href = resolvedUrl;
     link.download = doc.fileName || doc.label || "document";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
     link.click();
   };
 
@@ -1425,9 +1444,9 @@ export default function Admissions() {
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <div className="flex items-center gap-3">
-                      {rec.photoData ? (
+                      {rec.photoData && resolveFileUrl(rec.photoData) ? (
                         <img
-                          src={rec.photoData}
+                          src={resolveFileUrl(rec.photoData)}
                           alt={rec.name}
                           className="h-12 w-12 rounded-xl object-cover border border-slate-200 shadow-xs"
                         />
@@ -1507,9 +1526,9 @@ export default function Admissions() {
             {/* Modal Header */}
             <div className="sticky top-0 z-10 bg-slate-900 text-white px-6 py-5 rounded-t-2xl flex items-center justify-between">
               <div className="flex items-center gap-4">
-                {selectedApplicant.photoData ? (
+                {selectedApplicant.photoData && resolveFileUrl(selectedApplicant.photoData) ? (
                   <img
-                    src={selectedApplicant.photoData}
+                    src={resolveFileUrl(selectedApplicant.photoData)}
                     alt={selectedApplicant.name}
                     className="w-14 h-14 rounded-xl object-cover border-2 border-white/30"
                   />
@@ -1906,30 +1925,64 @@ export default function Admissions() {
             </DialogHeader>
 
             <div className="mt-4 flex items-center justify-center min-h-[300px] max-h-[60vh] overflow-auto bg-slate-100 rounded-xl p-2">
-              {previewDoc.fileData.startsWith("data:image/") ? (
-                <img
-                  src={previewDoc.fileData}
-                  alt={previewDoc.fileName}
-                  className="max-h-[55vh] max-w-full object-contain rounded-lg shadow-sm"
-                />
-              ) : previewDoc.fileData.startsWith("data:application/pdf") ? (
-                <iframe
-                  src={previewDoc.fileData}
-                  title={previewDoc.fileName}
-                  className="w-full h-[55vh] rounded-lg border-0"
-                />
-              ) : (
-                <div className="text-center p-8">
-                  <FileText className="w-12 h-12 text-slate-400 mx-auto mb-2" />
-                  <p className="text-sm font-medium text-slate-700">Preview not supported for this file type</p>
-                  <p className="text-xs text-muted-foreground mt-1 mb-4">
-                    Download the file to view on your device.
-                  </p>
-                  <Button onClick={() => downloadFile(previewDoc)} size="sm">
-                    Download File
-                  </Button>
-                </div>
-              )}
+              {(() => {
+                const resolvedUrl = resolveFileUrl(previewDoc.fileData);
+                if (!resolvedUrl) {
+                  return (
+                    <div className="text-center p-8">
+                      <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto mb-2" />
+                      <p className="text-sm font-semibold text-slate-800">Storage Gateway Unconfigured</p>
+                      <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                        This document is stored in Cloudflare R2, but VITE_WORKER_URL is currently unset.
+                        Configure the Worker gateway to view or download R2-backed documents.
+                      </p>
+                    </div>
+                  );
+                }
+
+                const isImage =
+                  resolvedUrl.startsWith("data:image/") ||
+                  previewDoc.mimeType?.startsWith("image/") ||
+                  /\.(jpg|jpeg|png|webp)(\?|$)/i.test(previewDoc.fileName);
+
+                const isPdf =
+                  resolvedUrl.startsWith("data:application/pdf") ||
+                  previewDoc.mimeType === "application/pdf" ||
+                  /\.pdf(\?|$)/i.test(previewDoc.fileName);
+
+                if (isImage) {
+                  return (
+                    <img
+                      src={resolvedUrl}
+                      alt={previewDoc.fileName}
+                      className="max-h-[55vh] max-w-full object-contain rounded-lg shadow-sm"
+                    />
+                  );
+                }
+
+                if (isPdf) {
+                  return (
+                    <iframe
+                      src={resolvedUrl}
+                      title={previewDoc.fileName}
+                      className="w-full h-[55vh] rounded-lg border-0"
+                    />
+                  );
+                }
+
+                return (
+                  <div className="text-center p-8">
+                    <FileText className="w-12 h-12 text-slate-400 mx-auto mb-2" />
+                    <p className="text-sm font-medium text-slate-700">Preview not supported for this file type</p>
+                    <p className="text-xs text-muted-foreground mt-1 mb-4">
+                      Download the file to view on your device.
+                    </p>
+                    <Button onClick={() => downloadFile(previewDoc)} size="sm">
+                      Download File
+                    </Button>
+                  </div>
+                );
+              })()}
             </div>
           </DialogContent>
         </Dialog>

@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { HodNotice, Student } from "@/lib/types";
 import { CalendarDays, Image as ImageIcon, Loader2, RefreshCcw, AlertTriangle } from "lucide-react";
+import { resolveFileUrl } from "@/lib/objectStorage";
 
 export default function StudentNotices() {
   const { appUser } = useAuth();
@@ -178,7 +179,7 @@ export default function StudentNotices() {
                       {notice.images.slice(0, 3).map((img) => (
                         <img
                           key={img.name}
-                          src={img.dataUrl}
+                          src={resolveFileUrl(img.dataUrl)}
                           alt={img.name}
                           className="h-28 w-full rounded-xl object-cover border border-border"
                         />
