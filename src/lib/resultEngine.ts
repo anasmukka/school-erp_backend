@@ -115,6 +115,7 @@ export interface PublishedReportCardSnapshot {
   reportPeriod: "term_1" | "term_2" | "annual";
   termId?: string;
   termName?: string;
+  workflowStatus?: "draft" | "teacher_signed" | "hod_signed" | "published" | string;
   studentUid: string;       // Canonical permanent ERP identity
   studentDocId?: string;     // Firestore document ID
   studentId: string;        // Backward compatibility
@@ -1061,7 +1062,7 @@ export async function fetchMarksEntriesForSection(params: {
       const recExamId = (data.examId || "").trim().toLowerCase();
       // Match if examId matches directly, or includes/is included by normTarget
       if (recExamId === normTarget || recExamId.includes(normTarget) || normTarget.includes(recExamId)) {
-        const rec = { id: d.id, ...data };
+        const rec = { ...data, id: d.id };
         if (data.studentUid) map[data.studentUid] = rec;
         if (data.studentId) map[data.studentId] = rec;
         if (data.studentDocId) map[data.studentDocId] = rec;
@@ -1740,12 +1741,20 @@ export async function signReportCardSequential(params: {
   const cardRef = doc(db, "publishedReportCards", cardDocId);
   const cardDoc = await getDoc(cardRef);
 
-  let currentStatus = "draft";
-  let existingData: any = {};
-  if (cardDoc.exists()) {
-    existingData = cardDoc.data();
-    currentStatus = existingData.workflowStatus || "draft";
+  if (!cardDoc.exists()) {
+    throw new Error(
+      `Report card for student '${studentUid}' in session '${sessionId}' has not been generated yet. Please generate the report card before applying sequential signatures.`
+    );
   }
+
+  const existingData = cardDoc.data() as any;
+  if (!existingData.scholasticResults || existingData.scholasticResults.length === 0) {
+    throw new Error(
+      `Report card for student '${studentUid}' has no calculated scholastic results. Please calculate report card results before signing.`
+    );
+  }
+
+  let currentStatus = existingData.workflowStatus || "draft";
 
   // 3. Sequential Stage Validation
   let nextStatus: "teacher_signed" | "hod_signed" | "published";

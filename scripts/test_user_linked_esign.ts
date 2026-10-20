@@ -460,9 +460,10 @@ console.log("\n--- Section 8: Source Code Static Security Verification ---");
   assert(adminSigCode.includes("grantSignatureEligibility"), "TEST 54: Admin Signatures uses grantSignatureEligibility");
   assert(adminSigCode.includes("revokeSignatureEligibility"), "TEST 55: Admin Signatures uses revokeSignatureEligibility");
 
-  // 4. ResultVerification.tsx
+  // 4. ResultVerification.tsx & resultEngine.ts
+  const resEngineCode = fs.readFileSync(path.resolve(process.cwd(), "src/lib/resultEngine.ts"), "utf-8");
+  assert(resEngineCode.includes("signReportCardSequential"), "TEST 56: resultEngine implements signReportCardSequential");
   const resVerCode = fs.readFileSync(path.resolve(process.cwd(), "src/pages/admin/ResultVerification.tsx"), "utf-8");
-  assert(resVerCode.includes("resolveStudentReportCardSignatures"), "TEST 56: ResultVerification uses resolveStudentReportCardSignatures");
   assert(!resVerCode.includes('query(collection(db, "signatures"), where("role", "==", "class_teacher")'), "TEST 57: ResultVerification no longer falls back to random class teacher signatures");
 }
 

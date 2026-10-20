@@ -465,7 +465,7 @@ export default function Admissions() {
       const appNo = generateApplicationNo();
       const admissionNo = form.type === "student" ? buildStudentAdmissionNo(uid) : "";
       const activeSess = await getActiveAcademicSession();
-      const activeYear = workingSession?.name || activeSess?.name || getAcademicSession();
+      const activeYear = workingSession?.name || activeSess?.name || "2026-27";
 
       const admissionRef = doc(collection(db, "admissions"));
       batch.set(admissionRef, {

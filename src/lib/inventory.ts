@@ -188,7 +188,7 @@ export async function recordStockMovement(
     entity: "stock_movement",
     entityId: input.itemId,
     details: `${input.movementType.toUpperCase()}: ${input.quantity} units for "${input.itemId}" - ${input.reason}`,
-    metadata: input,
+    metadata: input as unknown as Record<string, unknown>,
   });
 }
 
@@ -390,7 +390,7 @@ export async function issueUniformToStudent(
     entity: "uniform",
     entityId: issueId,
     details: `Issued uniform Size ${input.size} (${input.quantity} pcs) to student ${input.studentName} (${input.grade})`,
-    metadata: input,
+    metadata: input as unknown as Record<string, unknown>,
   });
 
   return issueId;
@@ -440,7 +440,7 @@ export async function createTextbookItem(
     entity: "textbook",
     entityId: ref.id,
     details: `Added curriculum textbook "${input.title}" for Grade ${input.grade} (${input.totalStock} copies)`,
-    metadata: input,
+    metadata: input as unknown as Record<string, unknown>,
   });
 
   return ref.id;
@@ -520,7 +520,7 @@ export async function distributeTextbookToStudent(
     entity: "textbook",
     entityId: distId,
     details: `Distributed textbook "${input.textbookId}" to student ${input.studentName} (${input.grade})`,
-    metadata: input,
+    metadata: input as unknown as Record<string, unknown>,
   });
 
   return distId;

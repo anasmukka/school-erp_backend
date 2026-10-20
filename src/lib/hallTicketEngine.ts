@@ -520,7 +520,7 @@ export function evaluateStudentExamEligibility(input: EvaluationInput): HallTick
   // Authoritative fee eligibility must strictly derive from the student's individualized assignment.
   // There is NO fallback to generic grade feeStructure templates for exam clearance.
   let totalFee = 0;
-  let effectiveInstallments: Array<{ id: string; label: string; amount: number; dueDate?: string }> = [];
+  let effectiveInstallments: Array<{ id: string; label: string; amount: number; dueDate?: string; termId?: string; termName?: string }> = [];
   let hasValidPlan = false;
 
   if (studentFeeAssignment && studentFeeAssignment.status === "active") {

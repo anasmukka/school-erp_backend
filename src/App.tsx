@@ -22,7 +22,6 @@ import StudentFeeAssignments from "@/pages/accounts/StudentFeeAssignments";
 import Collections from "@/pages/accounts/Collections";
 import Setup from "@/pages/Setup";
 import AttendanceRegister from "@/pages/teacher/AttendanceRegister";
-import TeacherRfidAttendance from "@/pages/teacher/RfidAttendance";
 import ManualAttendance from "@/pages/teacher/ManualAttendance";
 import TeacherAssignmentsActivities from "@/pages/teacher/AssignmentsActivities";
 import StudentFees from "@/pages/student/Fees";
@@ -31,7 +30,6 @@ import StudentAttendanceOverview from "@/pages/student/AttendanceOverview";
 import StudentNotices from "@/pages/student/Notices";
 import StudentExams from "@/pages/student/Exams";
 import Admissions from "@/pages/admin/Admissions";
-import RfidCards from "@/pages/admin/RfidCards";
 import StudentPromotion from "@/pages/admin/Promotion";
 import AcademicSessions from "@/pages/admin/AcademicSessions";
 import ExamApprovals from "@/pages/admin/ExamApprovals";
@@ -99,7 +97,6 @@ function Router() {
       <Route path="/admin/hods" component={() => <ProtectedRoute component={CreateHod} roles={["admin"]} />} />
       <Route path="/admin/accounts" component={() => <ProtectedRoute component={AccountsStaff} roles={["admin"]} />} />
       <Route path="/admin/admissions" component={() => <ProtectedRoute component={Admissions} roles={["admin"]} />} />
-      <Route path="/admin/rfid-cards" component={() => <ProtectedRoute component={RfidCards} roles={["admin"]} />} />
       <Route path="/admin/sessions" component={() => <ProtectedRoute component={AcademicSessions} roles={["admin"]} />} />
       <Route path="/admin/promotion" component={() => <ProtectedRoute component={StudentPromotion} roles={["admin"]} />} />
       <Route path="/admin/academic-structure" component={() => <ProtectedRoute component={AcademicStructurePlanner} roles={["admin"]} />} />
@@ -127,22 +124,21 @@ function Router() {
       <Route path="/hod/exam-scheduling" component={() => <ProtectedRoute component={HodExamScheduling} roles={["hod"]} />} />
       <Route path="/hod/notices" component={() => <ProtectedRoute component={HodNotices} roles={["hod"]} />} />
       <Route path="/hod/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["hod"]} />} />
-      <Route path="/teacher/rfid-attendance" component={() => <ProtectedRoute component={TeacherRfidAttendance} roles={["teacher"]} />} />
       <Route path="/teacher/manual-attendance" component={() => <ProtectedRoute component={ManualAttendance} roles={["teacher"]} />} />
       <Route path="/teacher/attendance-register" component={() => <ProtectedRoute component={AttendanceRegister} roles={["teacher"]} />} />
       <Route path="/teacher/assignments" component={() => <ProtectedRoute component={TeacherAssignmentsActivities} roles={["teacher"]} />} />
       <Route path="/teacher/marks" component={() => <ProtectedRoute component={TeacherMarksEntry} roles={["teacher", "admin", "hod"]} />} />
       <Route path="/teacher/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["teacher"]} />} />
-      <Route path="/student/exams" component={() => <ProtectedRoute component={StudentExams} roles={["student"]} />} />
-      <Route path="/student/results" component={() => <ProtectedRoute component={StudentResults} roles={["student"]} />} />
-      <Route path="/student/fees" component={() => <ProtectedRoute component={StudentFees} roles={["student"]} />} />
-      <Route path="/student/assignments" component={() => <ProtectedRoute component={StudentAssignmentsActivities} roles={["student"]} />} />
-      <Route path="/student/attendance-overview" component={() => <ProtectedRoute component={StudentAttendanceOverview} roles={["student"]} />} />
-      <Route path="/student/notices" component={() => <ProtectedRoute component={StudentNotices} roles={["student"]} />} />
-      <Route path="/student/report-card" component={() => <ProtectedRoute component={StudentReportCard} roles={["student"]} />} />
-      <Route path="/student/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["student"]} />} />
+      <Route path="/student/exams" component={() => <ProtectedRoute component={StudentExams} roles={["student", "parent"]} />} />
+      <Route path="/student/results" component={() => <ProtectedRoute component={StudentResults} roles={["student", "parent"]} />} />
+      <Route path="/student/fees" component={() => <ProtectedRoute component={StudentFees} roles={["student", "parent"]} />} />
+      <Route path="/student/assignments" component={() => <ProtectedRoute component={StudentAssignmentsActivities} roles={["student", "parent"]} />} />
+      <Route path="/student/attendance-overview" component={() => <ProtectedRoute component={StudentAttendanceOverview} roles={["student", "parent"]} />} />
+      <Route path="/student/notices" component={() => <ProtectedRoute component={StudentNotices} roles={["student", "parent"]} />} />
+      <Route path="/student/report-card" component={() => <ProtectedRoute component={StudentReportCard} roles={["student", "parent"]} />} />
+      <Route path="/student/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["student", "parent"]} />} />
       <Route path="/student/library" component={() => <ProtectedRoute component={StudentLibrary} roles={["student"]} />} />
-      <Route path="/student/hall-tickets" component={() => <ProtectedRoute component={StudentHallTickets} roles={["student"]} />} />
+      <Route path="/student/hall-tickets" component={() => <ProtectedRoute component={StudentHallTickets} roles={["student", "parent"]} />} />
       <Route path="/student/contact" component={() => <ProtectedRoute component={StudentContact} roles={["student"]} />} />
       <Route path="/admin/settings/contact" component={() => <ProtectedRoute component={AdminContactSettings} roles={["admin"]} />} />
       <Route path="/admin/notifications" component={() => <ProtectedRoute component={AdminNotifications} roles={["admin"]} />} />

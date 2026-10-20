@@ -115,7 +115,7 @@ export interface CreateFeeAssignmentParams {
 }
 
 export interface StudentFeeAssignment extends CreateFeeAssignmentParams {
-  id?: string;
+  id: string;
   studentUid?: string;
   authUid?: string;
   structureVersion: number;
@@ -126,6 +126,18 @@ export interface StudentFeeAssignment extends CreateFeeAssignmentParams {
   assignedAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export function syncAssignmentTerms(
+  terms: AssignmentTerm[] | undefined,
+  updatedInstallments: Installment[]
+): AssignmentTerm[] | undefined {
+  if (!terms || terms.length === 0) return undefined;
+  const instMap = new Map(updatedInstallments.map((i) => [i.id, i]));
+  return terms.map((t) => ({
+    ...t,
+    installments: t.installments.map((i) => instMap.get(i.id) || i),
+  }));
 }
 
 export async function createFeeAssignment(params: CreateFeeAssignmentParams, actor: Actor): Promise<string> {
@@ -164,7 +176,7 @@ export async function createFeeAssignment(params: CreateFeeAssignmentParams, act
     }
   }
 
-  const assignmentData: StudentFeeAssignment = {
+  const assignmentData: any = {
     ...params,
     terms,
     studentUid: params.studentUid || params.studentId,
@@ -182,11 +194,14 @@ export async function createFeeAssignment(params: CreateFeeAssignmentParams, act
   const docRef = await addDoc(collection(db, 'studentFeeAssignments'), assignmentData);
 
   await logAuditEvent({
+    userId: actor.uid,
+    userName: actor.name,
+    role: actor.role as any,
     action: 'create',
     entity: 'fee_assignment',
     entityId: docRef.id,
-    actor: { id: actor.uid, name: actor.name, role: actor.role },
-    details: {
+    details: `Created fee assignment for student ${params.studentId}`,
+    metadata: {
       studentId: params.studentId,
       studentUid: assignmentData.studentUid,
       authUid: assignmentData.authUid,
@@ -218,11 +233,14 @@ export async function updateFeeAssignment(assignmentId: string, updates: Partial
   await updateDoc(docRef, updateData);
   
   await logAuditEvent({
+    userId: actor.uid,
+    userName: actor.name,
+    role: actor.role as any,
     action: 'update',
     entity: 'fee_assignment',
     entityId: assignmentId,
-    actor: { id: actor.uid, name: actor.name, role: actor.role },
-    details: {
+    details: reason,
+    metadata: {
       reason,
       changes: Object.keys(updates).join(', '),
       version: newVersion
@@ -423,18 +441,6 @@ export async function addConcession(assignmentId: string, concession: Concession
         });
       }
     }
-
-function syncAssignmentTerms(
-  terms: AssignmentTerm[] | undefined,
-  updatedInstallments: Installment[]
-): AssignmentTerm[] | undefined {
-  if (!terms || terms.length === 0) return undefined;
-  const instMap = new Map(updatedInstallments.map((i) => [i.id, i]));
-  return terms.map((t) => ({
-    ...t,
-    installments: t.installments.map((i) => instMap.get(i.id) || i),
-  }));
-}
 
     await updateFeeAssignment(assignmentId, {
       concessions: updatedConcessions,

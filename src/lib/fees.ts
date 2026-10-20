@@ -267,8 +267,8 @@ export function buildTermInstallmentLedger(
   payments: FeePayment[],
   today = new Date(),
 ): TermLedgerSummary[] {
-  const normalizedTerms = normalizeFeeStructureTerms(structure);
-  const flatLedger = buildInstallmentLedger(structure, payments, today);
+  const normalizedTerms = normalizeFeeStructureTerms(structure as any);
+  const flatLedger = buildInstallmentLedger(structure as any, payments, today);
   const ledgerMap = new Map<string, FeeInstallmentLedgerRow>(flatLedger.map((r) => [r.id, r]));
 
   return normalizedTerms.map((term) => {

@@ -356,7 +356,7 @@ export default function AnnualReportCards() {
     }
 
     try {
-      await generateReportCardPdf(snap, { mode: "download" });
+      await generateReportCardPdf(snap);
       toast({ title: "Report Card Downloaded", description: `Downloaded PDF for ${stu.name}.` });
     } catch (err: any) {
       toast({ title: "PDF Generation Failed", description: err.message, variant: "destructive" });

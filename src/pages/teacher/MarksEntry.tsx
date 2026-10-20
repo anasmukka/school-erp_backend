@@ -295,9 +295,10 @@ export default function TeacherMarksEntry() {
 
         // Calculate maximum marks: explicit defExam.maxMarks, or sum of applicable components
         let maxMarks = defExam.maxMarks ?? 0;
-        if (!maxMarks && defExam.applicableComponentIds && version.assessmentComponents) {
+        const appCompIds = defExam.applicableComponentIds || (defExam as any).assessmentComponentIds || [];
+        if (!maxMarks && appCompIds.length > 0 && version.assessmentComponents) {
           const comps = version.assessmentComponents.filter((c) =>
-            defExam.applicableComponentIds.includes(c.id)
+            appCompIds.includes(c.id)
           );
           maxMarks = comps.reduce((acc, c) => acc + (c.testedMaxMarks ?? c.maxMarks ?? 0), 0);
         }

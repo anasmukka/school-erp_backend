@@ -146,7 +146,7 @@ export default function Dashboard() {
         const collections = paymentsSnap.docs.reduce(
           (total, record) => total + (Number(record.data().amount) || 0), 0,
         );
-        setStats({ teachers: 0, students: studentsSnap.size, pendingStudents: 0, feeStructures: feeStructuresSnap.size, payments: paymentsSnap.size, collections });
+        setStats((prev) => ({ ...prev, students: studentsSnap.size, feeStructures: feeStructuresSnap.size, payments: paymentsSnap.size, collections }));
       } else if (appUser.role === "hod") {
         const { listPendingEnrollmentsForHod } = await import("@/lib/enrollments");
         const pending = await listPendingEnrollmentsForHod(appUser.id);

@@ -647,7 +647,10 @@ async function runTestSuite() {
     auditLogsSnap.docs.length > 0,
     `Audit logs generated for marks module (Found: ${auditLogsSnap.docs.length} audit entries)`
   );
-  const lastLog = auditLogsSnap.docs[auditLogsSnap.docs.length - 1]?.data();
+  const sortedLogs = auditLogsSnap.docs
+    .map((d) => d.data())
+    .sort((a, b) => new Date(b.createdAt || b.timestamp || 0).getTime() - new Date(a.createdAt || a.timestamp || 0).getTime());
+  const lastLog = sortedLogs[0];
   assert(
     (lastLog?.module === "marks" || lastLog?.entity === "marks") &&
       (lastLog?.action === "submit" || lastLog?.action === "resubmit" || lastLog?.action === "update"),

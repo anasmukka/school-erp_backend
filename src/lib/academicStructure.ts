@@ -19,7 +19,7 @@ import { logAcademicAudit } from "./audit";
 
 export type StructureStatus = "draft" | "active" | "archived";
 export type TermWorkflowStatus = "not_started" | "open" | "marks_entry" | "verification" | "published" | "locked";
-export type CalculationMethod = "raw" | "scaled" | "best_of" | "average";
+export type CalculationMethod = "raw" | "scaled" | "best_of" | "average" | "scale_to_target";
 
 export interface AssessmentComponent {
   id: string;
@@ -28,7 +28,7 @@ export interface AssessmentComponent {
   maxMarks: number; // e.g. 80, 10, 5, 5
   testedMaxMarks?: number; // e.g. PT tested out of 40, scaled to 10
   scalingTargetMarks?: number; // e.g. 10
-  weightage: number; // weightage points or percentage contribution
+  weightage?: number; // weightage points or percentage contribution
   calculationMethod?: CalculationMethod;
   contributeToTotal: boolean;
   displayOnReportCard: boolean;
@@ -62,16 +62,19 @@ export interface DefinedExam {
   weightagePercentage?: number; // legacy fallback
   maxMarks?: number; // Configured explicit numeric maximum marks (e.g. 20, 70, 80, 100)
   passingMarks?: number; // Configured explicit numeric passing marks (e.g. 7, 25, 28, 35)
-  applicableComponentIds: string[]; // Component IDs that belong to this exam
+  applicableComponentIds?: string[]; // Component IDs that belong to this exam
+  assessmentComponentIds?: string[];
 }
 
 export interface SubjectTermOverride {
-  components: AssessmentComponent[];
+  components?: AssessmentComponent[];
+  assessmentComponents?: AssessmentComponent[];
   maxMarks?: number;
 }
 
 export interface SubjectAssessmentOverride {
   subjectId: string;
+  useCustomComponents?: boolean;
   termOverrides: Record<string, SubjectTermOverride>; // Keyed by termId (e.g. "term_1", "term_2")
 }
 
@@ -154,7 +157,7 @@ export type TermAggregationMode = "raw_sum" | "equal_average" | "weighted_terms"
 export type RoundingMethod = "round_half_up" | "round_floor" | "round_ceil" | "exact_decimal";
 
 export interface CalculationConfiguration {
-  componentRules: Record<
+  componentRules?: Record<
     string,
     {
       scalingMode: ComponentScalingMode;
@@ -163,23 +166,50 @@ export interface CalculationConfiguration {
       minPassingPercentage?: number;
     }
   >;
-  examAggregation: {
+  examAggregation?: {
     mode: ExamAggregationMode;
     componentWeights?: Record<string, number>;
     ptBestOfCount?: number;
   };
-  termAggregation: {
+  examAggregationRule?: ExamAggregationMode | string;
+  termAggregation?: TermAggregationMode | string | {
     mode: TermAggregationMode;
     termWeights: {
       term1: number;
       term2: number;
     };
   };
-  rounding: {
+  termWeights?: {
+    term_1?: number;
+    term_2?: number;
+    [key: string]: number | undefined;
+  };
+  termWeighting?: {
+    term1?: number;
+    term2?: number;
+    [key: string]: any;
+  };
+  roundingRule?: RoundingMethod | string;
+  decimalPlaces?: number;
+  rounding?: {
     method: RoundingMethod;
     decimalPlaces: number;
   };
-  passingCriteria: {
+  institutionalPassCriteria?: {
+    minSubjectPercentage?: number;
+    minAttendancePercentage?: number;
+    compartmentThreshold?: number;
+    requirePassInAllSubjects?: boolean;
+    [key: string]: any;
+  };
+  institutionalPassingRules?: {
+    minScholasticPercentage?: number;
+    minAttendancePercentage?: number;
+    compartmentAllowed?: boolean;
+    maxCompartmentSubjects?: number;
+    [key: string]: any;
+  };
+  passingCriteria?: {
     overallPassingPercentage: number;
     requirePassInAllSubjects: boolean;
     compartmentThresholdCount: number;
@@ -299,6 +329,7 @@ export interface AcademicStructureVersion {
   terms: AcademicTermConfig[];
   subjects: StructureSubjectEntry[];
   exams: DefinedExam[];
+  definedExams?: DefinedExam[];
   assessmentComponents: AssessmentComponent[];
   subjectOverrides?: Record<string, SubjectAssessmentOverride>;
   scholasticTableConfig?: ScholasticTableConfig;
@@ -999,6 +1030,7 @@ export async function createAcademicStructure(params: {
   terms?: AcademicTermConfig[];
   subjects: StructureSubjectEntry[];
   exams: DefinedExam[];
+  definedExams?: DefinedExam[];
   assessmentComponents: AssessmentComponent[];
   subjectOverrides?: Record<string, SubjectAssessmentOverride>;
   scholasticTableConfig?: ScholasticTableConfig;

@@ -114,7 +114,7 @@ export default function StudentResults() {
           setEnrollment(enrData);
         }
 
-        const grade = enrData?.grade || stuData.grade || "5";
+        const grade = enrData?.className || (enrData as any)?.grade || stuData.grade || "";
         const sectionId = enrData?.sectionId || stuData.sectionId || "";
 
         // 3. Fetch academic structure, subjects, and exams for this grade
@@ -259,7 +259,7 @@ export default function StudentResults() {
                 <span>•</span>
                 <span>Roll No: <strong>{student?.rollNo || "—"}</strong></span>
                 <span>•</span>
-                <span>Class: <strong>Grade {student?.grade} - {enrollment?.sectionName || student?.sectionName || "A"}</strong></span>
+                <span>Class: <strong>Grade {student?.grade || enrollment?.className || "—"} - {enrollment?.sectionName || (student as any)?.sectionName || "A"}</strong></span>
               </div>
             </div>
 
@@ -367,10 +367,16 @@ export default function StudentResults() {
                     );
                   }
 
+                  const definedExams = structureInfo?.version.exams || structureInfo?.version.definedExams || [];
+                  const configuredExam = definedExams.find(
+                    (e: any) => e.id === (selectedExam as any)?.definedExamId || e.id === selectedExam?.id
+                  );
+                  const dynamicMax = configuredExam?.maxMarks || sub.maxMarks || 100;
+
                   return (
                     <tr key={sub.id} className="hover:bg-muted/10 transition-colors">
                       <td className="p-3 font-medium text-slate-900">{sub.name}</td>
-                      <td className="p-3 text-center text-slate-400">{sub.maxMarks || 100}</td>
+                      <td className="p-3 text-center text-slate-400">{dynamicMax}</td>
                       <td className="p-3 text-center text-slate-400">—</td>
                       <td className="p-3 text-center text-slate-400">—</td>
                       <td className="p-3 text-center text-slate-400">—</td>

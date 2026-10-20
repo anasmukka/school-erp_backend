@@ -305,7 +305,7 @@ export default function AccountsBypasses() {
           sectionName: targetStudent.sectionName,
           sessionId: currentSchedule.sessionId,
           academicYear: currentSchedule.academicYear,
-          definedExamId: currentSchedule.definedExamId,
+          definedExamId: currentSchedule.definedExamId || currentSchedule.id,
           examName: currentSchedule.examType,
           scheduleId: currentSchedule.id,
           reason: reason.trim(),

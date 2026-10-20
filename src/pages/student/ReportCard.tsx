@@ -366,7 +366,7 @@ export default function StudentReportCard() {
                                 <td className="border border-black p-1.5 text-left font-medium">{sub.subjectName}</td>
 
                                 {t1Comps.map((c) => {
-                                  const mark = sub.term1?.components?.[c.code] ?? sub.term1?.components?.[c.id] ?? "—";
+                                  const mark = sub.term1?.componentScores?.[c.code]?.marks ?? sub.term1?.componentScores?.[c.id]?.marks ?? "—";
                                   return (
                                     <td key={c.id} className="border border-black p-1">
                                       {mark}
@@ -374,11 +374,11 @@ export default function StudentReportCard() {
                                   );
                                 })}
                                 <td className="border border-black p-1 font-semibold bg-gray-50/40">
-                                  {sub.term1?.scaledTotal ?? "—"}
+                                  {sub.term1?.totalMarks ?? "—"}
                                 </td>
 
                                 {t2Comps.map((c) => {
-                                  const mark = sub.term2?.components?.[c.code] ?? sub.term2?.components?.[c.id] ?? "—";
+                                  const mark = sub.term2?.componentScores?.[c.code]?.marks ?? sub.term2?.componentScores?.[c.id]?.marks ?? "—";
                                   return (
                                     <td key={c.id} className="border border-black p-1">
                                       {mark}
@@ -386,7 +386,7 @@ export default function StudentReportCard() {
                                   );
                                 })}
                                 <td className="border border-black p-1 font-semibold bg-gray-50/40">
-                                  {sub.term2?.scaledTotal ?? "—"}
+                                  {sub.term2?.totalMarks ?? "—"}
                                 </td>
 
                                 {overallCfg.showOverallTotal && (

@@ -615,6 +615,12 @@ export async function promoteEnrollment(input: PromoteStudentInput): Promise<voi
       createdAt: new Date().toISOString(),
       promotedFromEnrollmentId: prev.id,
     });
+
+    batch.update(doc(db, "students", input.studentId), {
+      grade: input.targetClassName ?? prev.className,
+      sectionId: input.targetSectionId ?? prev.sectionId,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   await batch.commit();

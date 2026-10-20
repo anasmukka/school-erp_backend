@@ -160,6 +160,7 @@ export interface Subject {
   grade: string;
   category?: SubjectCategory;
   order?: number;
+  maxMarks?: number;
 }
 
 export interface SubjectAssignment {

@@ -4,7 +4,7 @@ import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import {
   School, BookOpen, FileText,
-  Calendar, CalendarDays, ChevronRight, GraduationCap, ArrowUpRight, Wifi, ClipboardCheck, FileSpreadsheet,
+  Calendar, CalendarDays, ChevronRight, GraduationCap, ArrowUpRight, ClipboardCheck, FileSpreadsheet,
 } from "lucide-react";
 import { Link } from "wouter";
 import UpcomingEventsWidget from "@/components/calendar/UpcomingEventsWidget";
@@ -150,12 +150,6 @@ export default function TeacherDashboard() {
                 label="Manual Attendance"
                 desc="Mark P/A/L for today's class list"
                 icon={<ClipboardCheck size={20} className="text-emerald-500" />}
-              />
-              <GlassQuickLink
-                href="/teacher/rfid-attendance"
-                label="RFID Attendance"
-                desc="Live view of today's scans for your section"
-                icon={<Wifi size={20} className="text-indigo-500" />}
               />
             </>
           )}

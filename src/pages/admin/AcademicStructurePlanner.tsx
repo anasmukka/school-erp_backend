@@ -706,6 +706,8 @@ export default function AcademicStructurePlanner() {
           name: areaFormData.name.trim(),
           code: areaFormData.code.trim().toUpperCase(),
           category: areaFormData.category,
+          enabled: true,
+          applicableTermIds: ["term_1", "term_2"],
           displayOnReportCard: true,
           order: updatedAreas.length + 1,
         };
@@ -1402,7 +1404,7 @@ export default function AcademicStructurePlanner() {
                     <div>
                       <Label className="text-xs font-semibold">Aggregation Formula</Label>
                       <Select
-                        value={calcConfig.termAggregation || "weighted_average"}
+                        value={typeof calcConfig.termAggregation === "string" ? calcConfig.termAggregation : calcConfig.termAggregation?.mode || "weighted_average"}
                         onValueChange={(val: any) => {
                           setCalcConfig({
                             ...calcConfig,
@@ -1806,7 +1808,7 @@ export default function AcademicStructurePlanner() {
                                           </Badge>
                                         </div>
                                         <div className="space-y-1">
-                                          {tComps.map((c) => (
+                                          {tComps.map((c: any) => (
                                             <div key={c.id} className="text-xs p-1.5 rounded bg-background border flex items-center justify-between">
                                               <span>{c.code}: {c.name}</span>
                                               <span className="font-semibold">{c.scalingTargetMarks ?? c.maxMarks}M</span>

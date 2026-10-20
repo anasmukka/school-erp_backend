@@ -66,6 +66,7 @@ export default function StudentLibrary() {
   // 1. Resolve student identity strictly from authenticated account (Zero IDOR)
   useEffect(() => {
     if (!appUser) return;
+    const currentUser = appUser;
 
     let isMounted = true;
     async function initStudent() {
@@ -73,7 +74,7 @@ export default function StudentLibrary() {
         setLoading(true);
         const [rules, identity] = await Promise.all([
           getLibraryFineRules(),
-          resolveStudentLibraryIdentifiers(appUser.id, appUser.email),
+          resolveStudentLibraryIdentifiers(currentUser.id, currentUser.email),
         ]);
 
         if (isMounted) {

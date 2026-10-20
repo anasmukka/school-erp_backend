@@ -159,6 +159,7 @@ export async function createAcademicSession(input: {
   startDate: string;
   endDate: string;
   notes?: string;
+  activateImmediately?: boolean;
 }): Promise<AcademicSession> {
   const cleanName = input.name.trim();
   if (!cleanName) throw new Error("Session name is required.");
@@ -196,6 +197,13 @@ export async function createAcademicSession(input: {
   });
 
   await batch.commit();
+
+  if (input.activateImmediately) {
+    await activateAcademicSession(docId);
+    newSession.isCurrent = true;
+    newSession.status = "active";
+  }
+
   return newSession;
 }
 

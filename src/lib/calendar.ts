@@ -201,7 +201,7 @@ export function canUserViewEvent(event: SchoolEvent, ctx: UserCalendarContext): 
     return user.role === "hod";
   }
   if (event.audienceType === "admin") {
-    return user.role === "admin";
+    return (user.role as string) === "admin";
   }
 
   // Specific Roles
@@ -590,8 +590,8 @@ export async function getUnifiedCalendar(params: {
               examDetails: {
                 subjectId: paper.subjectId,
                 subjectName: paper.subjectName,
-                maxMarks: paper.maxMarks,
-                passingMarks: paper.passingMarks,
+                maxMarks: paper.maxMarks ?? 100,
+                passingMarks: paper.passingMarks ?? 33,
                 grade: exGrade,
                 examType: sched.examType,
               },

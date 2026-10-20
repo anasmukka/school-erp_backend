@@ -82,7 +82,7 @@ export async function logAuditEvent(params: LogAuditParams): Promise<string | nu
 
 export interface LogAcademicAuditParams {
   action: string;
-  module: "academic_structure" | "marks" | "exam_schedule" | "results";
+  module: "academic_structure" | "marks" | "exam_schedule" | "results" | "exam_results" | "report_card_details" | "report_card_signatures" | "signatures" | string;
   targetId: string;
   targetName: string;
   sessionId?: string;

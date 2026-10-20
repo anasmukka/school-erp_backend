@@ -484,10 +484,16 @@ export default function ResultVerification() {
             <tbody className="divide-y divide-border/40">
               {subjects.map((sub) => {
                 const info = subjectStatuses[sub.id] || { status: "not_started", count: 0 };
+                const definedExams = structureInfo?.version.exams || structureInfo?.version.definedExams || [];
+                const defExam = definedExams.find(
+                  (e: any) => e.id === (currentExam as any)?.definedExamId || e.id === currentExam?.id
+                );
+                const subEntries = marksMap[sub.id] ? Object.values(marksMap[sub.id]) : [];
+                const effectiveMax = subEntries[0]?.totalMaxMarks ?? defExam?.maxMarks ?? sub.maxMarks ?? 100;
                 return (
                   <tr key={sub.id} className="hover:bg-muted/10 transition-colors">
                     <td className="p-3 font-medium text-slate-900">{sub.name}</td>
-                    <td className="p-3 text-slate-600">{sub.maxMarks || 100}</td>
+                    <td className="p-3 text-slate-600">{effectiveMax}</td>
                     <td className="p-3 text-slate-600">
                       <span className={info.count < students.length ? "text-amber-600 font-bold" : "text-emerald-700 font-bold"}>
                         {info.count} / {students.length} students

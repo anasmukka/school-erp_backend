@@ -404,7 +404,7 @@ service cloud.firestore {
         (resource.data.audienceType == 'parents' && getUserRole() == 'parent') ||
         isAdmin()
       );
-      allow create: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || isStaff());
       allow update: if isSignedIn() && (
         resource.data.userId == request.auth.uid ||
         resource.data.recipientTeacherId == request.auth.uid ||
@@ -520,7 +520,11 @@ service cloud.firestore {
       allow read: if isSignedIn() && (
         isAdmin() ||
         getUserRole() in ['hod', 'teacher'] ||
-        (getUserRole() == 'student' && (resource.data.studentUid == request.auth.uid || resource.data.studentId == request.auth.uid))
+        (getUserRole() == 'student' && (resource.data.studentUid == request.auth.uid || resource.data.studentId == request.auth.uid)) ||
+        (getUserRole() == 'parent' && (
+          resource.data.studentUid in getUserData().linkedStudentUids ||
+          resource.data.studentId in getUserData().linkedStudentUids
+        ))
       );
       allow create, update: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher']);
       allow delete: if isAdmin();
@@ -541,6 +545,53 @@ service cloud.firestore {
         isAdmin()
       );
       allow update, delete: if isAdmin();
+    }
+
+    match /schoolContact/{schoolId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ==========================================
+    // 12. CENTRALIZED NOTIFICATION SYSTEM & MESSAGING
+    // ==========================================
+    match /notificationJobs/{jobId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.recipientId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /notificationLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false; // immutable audit log
+    }
+
+    match /notificationTemplates/{templateId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /notificationSettings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /notificationPreferences/{userId} {
+      allow read: if isSignedIn() && (isAdmin() || request.auth.uid == userId);
+      allow create, update: if isSignedIn() && (isAdmin() || (request.auth.uid == userId && request.resource.data.userId == request.auth.uid));
+      allow delete: if isAdmin();
+    }
+
+    match /deviceTokens/{tokenId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create, update: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow delete: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+    }
+
+    match /whatsappConsents/{consentId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create, update: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow delete: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
     }
   }
 }
