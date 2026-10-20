@@ -39,8 +39,10 @@ import AdminNotices from "@/pages/admin/Notices";
 import HodExamScheduling from "@/pages/hod/ExamScheduling";
 import AcademicStructurePlanner from "@/pages/admin/AcademicStructurePlanner";
 import ResultVerification from "@/pages/admin/ResultVerification";
+import AnnualReportCards from "@/pages/admin/AnnualReportCards";
 import TeacherMarksEntry from "@/pages/teacher/MarksEntry";
 import StudentReportCard from "@/pages/student/ReportCard";
+import StudentResults from "@/pages/student/Results";
 import PrintingDashboard from "@/pages/printing/PrintingDashboard";
 import PrintingOrders from "@/pages/printing/PrintingOrders";
 import LibraryManagement from "@/pages/library/LibraryManagement";
@@ -56,6 +58,9 @@ import StudentHallTickets from "@/pages/student/StudentHallTickets";
 import StudentLibrary from "@/pages/student/Library";
 import UniversalProfile from "@/pages/profile/UniversalProfile";
 import ProfileChangeRequests from "@/pages/admin/ProfileChangeRequests";
+import StudentContact from "@/pages/student/Contact";
+import AdminContactSettings from "@/pages/admin/ContactSettings";
+import AdminNotifications from "@/pages/admin/Notifications";
 import { AcademicSessionProvider } from "@/contexts/AcademicSessionContext";
 
 const queryClient = new QueryClient();
@@ -99,6 +104,7 @@ function Router() {
       <Route path="/admin/promotion" component={() => <ProtectedRoute component={StudentPromotion} roles={["admin"]} />} />
       <Route path="/admin/academic-structure" component={() => <ProtectedRoute component={AcademicStructurePlanner} roles={["admin"]} />} />
       <Route path="/admin/results" component={() => <ProtectedRoute component={ResultVerification} roles={["admin", "hod"]} />} />
+      <Route path="/admin/report-cards" component={() => <ProtectedRoute component={AnnualReportCards} roles={["admin", "hod", "teacher"]} />} />
       <Route path="/admin/exam-approvals" component={() => <ProtectedRoute component={ExamApprovals} roles={["admin"]} />} />
       <Route path="/admin/notices" component={() => <ProtectedRoute component={AdminNotices} roles={["admin"]} />} />
       <Route path="/admin/classes" component={() => <ProtectedRoute component={ClassManagement} roles={["admin"]} />} />
@@ -128,6 +134,7 @@ function Router() {
       <Route path="/teacher/marks" component={() => <ProtectedRoute component={TeacherMarksEntry} roles={["teacher", "admin", "hod"]} />} />
       <Route path="/teacher/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["teacher"]} />} />
       <Route path="/student/exams" component={() => <ProtectedRoute component={StudentExams} roles={["student"]} />} />
+      <Route path="/student/results" component={() => <ProtectedRoute component={StudentResults} roles={["student"]} />} />
       <Route path="/student/fees" component={() => <ProtectedRoute component={StudentFees} roles={["student"]} />} />
       <Route path="/student/assignments" component={() => <ProtectedRoute component={StudentAssignmentsActivities} roles={["student"]} />} />
       <Route path="/student/attendance-overview" component={() => <ProtectedRoute component={StudentAttendanceOverview} roles={["student"]} />} />
@@ -136,6 +143,9 @@ function Router() {
       <Route path="/student/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} roles={["student"]} />} />
       <Route path="/student/library" component={() => <ProtectedRoute component={StudentLibrary} roles={["student"]} />} />
       <Route path="/student/hall-tickets" component={() => <ProtectedRoute component={StudentHallTickets} roles={["student"]} />} />
+      <Route path="/student/contact" component={() => <ProtectedRoute component={StudentContact} roles={["student"]} />} />
+      <Route path="/admin/settings/contact" component={() => <ProtectedRoute component={AdminContactSettings} roles={["admin"]} />} />
+      <Route path="/admin/notifications" component={() => <ProtectedRoute component={AdminNotifications} roles={["admin"]} />} />
       <Route path="/calendar" component={() => <ProtectedRoute component={SchoolCalendarPage} />} />
       <Route path="/id-cards" component={() => <ProtectedRoute component={IDCards} roles={["admin", "hod"]} />} />
       <Route path="/setup" component={Setup} />

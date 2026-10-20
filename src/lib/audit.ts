@@ -118,6 +118,7 @@ export async function logAcademicAudit(params: LogAcademicAuditParams): Promise<
       role: params.performedBy.role,
       action: params.action,
       entity: params.module,
+      module: params.module,
       entityId: params.targetId,
       entityName: params.targetName,
       details: detailsStr,

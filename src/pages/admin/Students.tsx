@@ -26,6 +26,7 @@ import { User as UserIcon, Trash2, Loader2, CalendarDays, ArrowDownAZ, Search, P
 import { syncAlphabeticalRollNumbersForSection } from "@/lib/enrollments";
 import { SearchInput } from "@/components/ui/SearchInput";
 import { resolveFileUrl } from "@/lib/objectStorage";
+import { TableSkeleton } from "@/components/common/Skeletons";
 
 const GRADES = ["1","2","3","4","5","6","7","8","9","10","11","12"];
 
@@ -437,7 +438,9 @@ export default function Students() {
       </Card>
 
       {/* Empty State: Zero Students in Database */}
-      {students.length === 0 ? (
+      {loading && students.length === 0 ? (
+        <TableSkeleton rows={8} columns={5} />
+      ) : students.length === 0 ? (
         <Card className="border-dashed border-2 border-slate-200">
           <CardContent className="py-16 text-center flex flex-col items-center justify-center">
             <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-4">

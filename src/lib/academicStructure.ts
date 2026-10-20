@@ -883,14 +883,28 @@ export function deriveTermMaxMarks(termOrVersion: any, termId?: string): number 
 
 export async function listAcademicStructures(sessionId?: string): Promise<AcademicStructure[]> {
   try {
-    let q = query(collection(db, "academicStructures"));
-    if (sessionId) {
-      q = query(collection(db, "academicStructures"), where("sessionId", "==", sessionId));
-    }
-    const snap = await getDocs(q);
+    const snap = await getDocs(collection(db, "academicStructures"));
     const structures: AcademicStructure[] = [];
     snap.forEach((d) => {
-      structures.push({ id: d.id, ...d.data() } as AcademicStructure);
+      const data = { id: d.id, ...d.data() } as AcademicStructure;
+      if (!sessionId) {
+        structures.push(data);
+      } else {
+        const norm = sessionId.trim().toLowerCase();
+        const docSession = (data.sessionId || "").trim().toLowerCase();
+        const docYear = (data.academicYear || "").trim().toLowerCase();
+        if (
+          !data.sessionId ||
+          docSession === norm ||
+          docYear === norm ||
+          docSession.includes(norm) ||
+          norm.includes(docSession) ||
+          docYear.includes(norm) ||
+          norm.includes(docYear)
+        ) {
+          structures.push(data);
+        }
+      }
     });
     structures.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     return structures;

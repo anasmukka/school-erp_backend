@@ -34,6 +34,8 @@ import {
   FileSignature,
   User,
   UserCheck,
+  PhoneCall,
+  BellRing,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAcademicSession } from "@/contexts/AcademicSessionContext";
@@ -57,7 +59,8 @@ const navItems: NavItem[] = [
   { label: "Operations Staff", href: "/admin/operations", icon: <Package size={18} />, roles: ["admin"] },
   { label: "Reports & Audits", href: "/admin/reports", icon: <BarChart3 size={18} />, roles: ["admin"] },
   { label: "Academic Structure", href: "/admin/academic-structure", icon: <Layers size={18} />, roles: ["admin"] },
-  { label: "Results & Report Cards", href: "/admin/results", icon: <Award size={18} />, roles: ["admin", "hod"] },
+  { label: "Exam Results", href: "/admin/results", icon: <FileSpreadsheet size={18} />, roles: ["admin", "hod"] },
+  { label: "Annual Report Cards", href: "/admin/report-cards", icon: <Award size={18} />, roles: ["admin", "hod"] },
   { label: "Section Heads", href: "/admin/hods", icon: <ShieldCheck size={18} />, roles: ["admin"] },
   { label: "Teachers", href: "/admin/teachers", icon: <Users size={18} />, roles: ["admin"] },
   { label: "Students", href: "/admin/students", icon: <GraduationCap size={18} />, roles: ["admin"] },
@@ -73,6 +76,8 @@ const navItems: NavItem[] = [
   { label: "Notices", href: "/admin/notices", icon: <Bell size={18} />, roles: ["admin"] },
   { label: "RFID Cards", href: "/admin/rfid-cards", icon: <Wifi size={18} />, roles: ["admin"] },
   { label: "ID Cards", href: "/id-cards", icon: <Contact size={18} />, roles: ["admin", "hod"] },
+  { label: "School Contact", href: "/admin/settings/contact", icon: <PhoneCall size={18} />, roles: ["admin"] },
+  { label: "Notifications Hub", href: "/admin/notifications", icon: <BellRing size={18} />, roles: ["admin"] },
   { label: "Student Fees", href: "/accounts/student-fees", icon: <CreditCard size={18} />, roles: ["accountant", "admin"] },
   { label: "Fee Structures", href: "/accounts/fees", icon: <Layers size={18} />, roles: ["accountant", "admin"] },
   { label: "Collections", href: "/accounts/collections", icon: <FileText size={18} />, roles: ["accountant", "admin"] },
@@ -86,6 +91,7 @@ const navItems: NavItem[] = [
   { label: "My Signature", href: "/my-signature", icon: <FileSignature size={18} />, roles: ["admin", "hod", "teacher"] },
   { label: "School Calendar", href: "/teacher/calendar", icon: <CalendarDays size={18} />, roles: ["teacher"] },
   { label: "Marks Entry", href: "/teacher/marks", icon: <FileSpreadsheet size={18} />, roles: ["teacher"] },
+  { label: "Annual Report Cards", href: "/admin/report-cards", icon: <Award size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "RFID Attendance", href: "/teacher/rfid-attendance", icon: <Wifi size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Manual Attendance", href: "/teacher/manual-attendance", icon: <ClipboardCheck size={18} />, roles: ["teacher"], requiresClassTeacher: true },
   { label: "Attendance Register", href: "/teacher/attendance-register", icon: <CalendarCheck2 size={18} />, roles: ["teacher"], requiresClassTeacher: true },
@@ -93,12 +99,14 @@ const navItems: NavItem[] = [
   { label: "School Calendar", href: "/student/calendar", icon: <CalendarDays size={18} />, roles: ["student"] },
   { label: "Library", href: "/student/library", icon: <BookOpen size={18} />, roles: ["student"] },
   { label: "Hall Tickets", href: "/student/hall-tickets", icon: <FileText size={18} />, roles: ["student"] },
-  { label: "Report Card", href: "/student/report-card", icon: <Award size={18} />, roles: ["student"] },
+  { label: "Exam Results", href: "/student/results", icon: <FileSpreadsheet size={18} />, roles: ["student"] },
+  { label: "Annual Report Card", href: "/student/report-card", icon: <Award size={18} />, roles: ["student"] },
   { label: "Exam Timetable", href: "/student/exams", icon: <CalendarDays size={18} />, roles: ["student"] },
   { label: "My Fees", href: "/student/fees", icon: <CreditCard size={18} />, roles: ["student"] },
   { label: "Assignments & Activities", href: "/student/assignments", icon: <FileText size={18} />, roles: ["student"] },
   { label: "Attendance Overview", href: "/student/attendance-overview", icon: <CalendarCheck2 size={18} />, roles: ["student"] },
   { label: "Notices", href: "/student/notices", icon: <Bell size={18} />, roles: ["student"] },
+  { label: "Contact", href: "/student/contact", icon: <PhoneCall size={18} />, roles: ["student"] },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -503,21 +511,26 @@ export default function Layout({ children }: { children: ReactNode }) {
         </header>
 
         {/* Mobile header */}
-        <header className="relative z-40 flex items-center justify-between border-b border-white/30 bg-white/70 px-4 py-2.5 backdrop-blur-md md:hidden">
-          <div className="flex items-center gap-1">
-            <button onClick={() => setMobileOpen(true)} className="rounded-lg p-1.5 hover:bg-white/65">
-              <Menu size={20} />
+        <header className="relative z-40 flex items-center justify-between border-b border-white/30 bg-white/70 px-3.5 py-2.5 backdrop-blur-md md:hidden">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setMobileOpen(true)}
+              className="rounded-lg p-2 min-h-[44px] min-w-[44px] flex items-center justify-center hover:bg-white/65 active:bg-white/80 transition-colors"
+              aria-label="Open navigation menu"
+              type="button"
+            >
+              <Menu size={22} className="text-slate-800" />
             </button>
             <div className="relative">
               <button
                 onClick={() => setMobileNotifOpen(!mobileNotifOpen)}
-                className="rounded-lg p-1.5 hover:bg-white/65 relative"
+                className="rounded-lg p-2 min-h-[44px] min-w-[44px] flex items-center justify-center hover:bg-white/65 relative transition-colors"
                 aria-label="Notifications"
                 type="button"
               >
-                <Bell size={18} />
+                <Bell size={20} className="text-slate-700" />
                 {unreadCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                  <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow-xs">
                     {unreadCount > 9 ? "9+" : unreadCount}
                   </span>
                 )}
@@ -533,7 +546,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
           {appUser?.role !== "printing" && appUser?.role !== "operations" && <SessionDropdown />}
         </header>
-        <main className="flex-1 overflow-y-auto p-6 lg:p-7">
+        <main className="flex-1 overflow-y-auto p-3.5 sm:p-5 lg:p-7 min-w-0">
           {children}
         </main>
       </div>

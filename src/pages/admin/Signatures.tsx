@@ -58,6 +58,7 @@ import {
   Edit3,
 } from "lucide-react";
 import { toast } from "sonner";
+import { TableSkeleton } from "@/components/common/Skeletons";
 
 const ROLE_LABELS: Record<SignatoryRole, string> = {
   admin: "Admin (Principal)",
@@ -628,10 +629,7 @@ export default function AdminSignatures() {
           </div>
 
           {loading ? (
-            <div className="p-12 text-center text-muted-foreground">
-              <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-primary" />
-              Loading authorized signatures…
-            </div>
+            <TableSkeleton rows={5} columns={5} />
           ) : filteredSignatures.length === 0 ? (
             <Card className="rounded-2xl p-12 text-center text-muted-foreground border">
               <FileSignature className="w-12 h-12 mx-auto text-primary/40 mb-3" />

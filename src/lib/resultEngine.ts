@@ -23,6 +23,8 @@ import {
   getEffectiveComponentsForSubject,
 } from "./academicStructure";
 import { logAcademicAudit } from "./audit";
+import type { ExamSchedule, ExamSubjectEntry, Enrollment, DisciplineGrade } from "./types";
+import { verifyStudentReportCardSigner } from "./signatures";
 
 // ==========================================
 // 1. DATA INTERFACES
@@ -67,6 +69,8 @@ export interface MarksEntryRecord {
   workflowStatus: MarksWorkflowStatus;
   enteredBy: string;
   enteredAt: string;
+  updatedBy?: string;
+  updatedAt?: string;
   submittedAt?: string;
   verifiedBy?: string;
   verifiedAt?: string;
@@ -384,14 +388,15 @@ export function calculateStudentExamMarks(params: {
     allExempt = false;
 
     let raw = 0;
+    const testedMax = comp.testedMaxMarks ?? comp.maxMarks;
     if (input.marks !== null && input.marks !== undefined) {
       hasAnyInput = true;
       const num = Number(input.marks);
       if (isNaN(num) || num < 0) {
         errors.push(`${comp.name} (${comp.code}) marks cannot be negative.`);
-      } else if (num > comp.maxMarks) {
+      } else if (num > testedMax) {
         errors.push(
-          `${comp.name} (${comp.code}) marks (${num}) exceeds maximum allowed (${comp.maxMarks}).`
+          `${comp.name} (${comp.code}) marks (${num}) exceeds maximum allowed (${testedMax}).`
         );
       } else {
         raw = num;
@@ -401,8 +406,8 @@ export function calculateStudentExamMarks(params: {
     // Component Scaling
     let effectiveMarks = raw;
     let effectiveMax = comp.maxMarks;
-    if (comp.scalingTargetMarks && comp.scalingTargetMarks > 0 && comp.maxMarks > 0) {
-      effectiveMarks = (raw / comp.maxMarks) * comp.scalingTargetMarks;
+    if (comp.scalingTargetMarks && comp.scalingTargetMarks > 0 && testedMax > 0) {
+      effectiveMarks = (raw / testedMax) * comp.scalingTargetMarks;
       effectiveMax = comp.scalingTargetMarks;
     }
 
@@ -595,6 +600,8 @@ export function calculateSubjectTermAndOverall(params: {
   };
 }
 
+export const calculateAnnualSubjectResult = calculateSubjectTermAndOverall;
+
 /**
  * Evaluates institutional pass/fail status and grand totals across all scholastic subjects.
  */
@@ -770,6 +777,251 @@ export async function verifyMarksEntryAuthorization(params: {
 // 5. MARKS ENTRY WORKFLOW ENGINE
 // ==========================================
 
+/**
+ * Checks whether an exam date/time has concluded in the school's configured time zone (Asia/Kolkata).
+ * Requirements:
+ * - If schedule contains date and no specific end time: treated as conducted only after the calendar date has passed.
+ *   If the scheduled date is today, marks entry remains unavailable until that date has passed.
+ * - If schedule contains specific end time or end date: respects the configured examination period.
+ */
+export function isExamDateCompleted(
+  dateStr: string,
+  endTimeStr?: string,
+  nowDate: Date = new Date()
+): { completed: boolean; reason?: string; scheduledDateStr: string; nowISTStr: string } {
+  if (!dateStr) {
+    return {
+      completed: false,
+      reason: "No examination date specified in schedule.",
+      scheduledDateStr: "",
+      nowISTStr: "",
+    };
+  }
+
+  // Format current time in Asia/Kolkata
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(nowDate);
+  const partMap: Record<string, string> = {};
+  parts.forEach((p) => (partMap[p.type] = p.value));
+  const year = partMap.year;
+  const month = partMap.month;
+  const day = partMap.day;
+  const hour = partMap.hour === "24" ? "00" : partMap.hour;
+  const minute = partMap.minute;
+  const nowISTDateStr = `${year}-${month}-${day}`;
+  const nowISTTimeStr = `${hour}:${minute}`;
+
+  const schedDateStr = dateStr.trim().slice(0, 10);
+
+  // If specific end time is provided (e.g. "11:00", "12:30", "13:00")
+  if (endTimeStr && endTimeStr.trim()) {
+    const cleanEndTime = endTimeStr.trim();
+    // Compare full date-time in IST (+05:30)
+    const schedDateTimeStr = `${schedDateStr}T${cleanEndTime.length === 5 ? cleanEndTime + ":00" : cleanEndTime}+05:30`;
+    const schedTimestamp = new Date(schedDateTimeStr).getTime();
+    if (!isNaN(schedTimestamp)) {
+      if (nowDate.getTime() >= schedTimestamp) {
+        return {
+          completed: true,
+          scheduledDateStr: schedDateStr,
+          nowISTStr: `${nowISTDateStr} ${nowISTTimeStr}`,
+        };
+      } else {
+        return {
+          completed: false,
+          reason: `Exam is scheduled for ${schedDateStr} (until ${cleanEndTime} IST). Marks entry will become available after the examination period concludes.`,
+          scheduledDateStr: schedDateStr,
+          nowISTStr: `${nowISTDateStr} ${nowISTTimeStr}`,
+        };
+      }
+    }
+  }
+
+  // If NO specific end time is provided:
+  // "treat the exam as having been conducted only after its scheduled calendar date has passed in the school's configured time zone.
+  // If the scheduled date is today, marks entry must remain unavailable until that date has passed."
+  if (nowISTDateStr > schedDateStr) {
+    return {
+      completed: true,
+      scheduledDateStr: schedDateStr,
+      nowISTStr: `${nowISTDateStr} ${nowISTTimeStr}`,
+    };
+  } else if (nowISTDateStr === schedDateStr) {
+    return {
+      completed: false,
+      reason: `Exam is scheduled for today (${schedDateStr}). Marks entry will become available tomorrow after the exam date has passed.`,
+      scheduledDateStr: schedDateStr,
+      nowISTStr: `${nowISTDateStr} ${nowISTTimeStr}`,
+    };
+  } else {
+    return {
+      completed: false,
+      reason: `Exam is scheduled for ${schedDateStr}. Marks entry will become available after the examination date.`,
+      scheduledDateStr: schedDateStr,
+      nowISTStr: `${nowISTDateStr} ${nowISTTimeStr}`,
+    };
+  }
+}
+
+export interface ExamEligibilityResult {
+  eligible: boolean;
+  status: "available" | "submitted" | "locked" | "not_scheduled" | "awaiting_approval" | "not_conducted";
+  reason: string;
+  schedule?: ExamSchedule;
+  subjectSchedule?: ExamSubjectEntry;
+  workflowStatus?: MarksWorkflowStatus;
+  scheduledDate?: string;
+  scheduledEndTime?: string;
+}
+
+/**
+ * Authoritatively validates whether an exam is scheduled, approved, and completed for a specific grade, section & subject.
+ */
+export async function validateExamScheduleEligibility(params: {
+  sessionId?: string;
+  grade: string;
+  sectionId: string;
+  subjectId: string;
+  examId: string; // definedExamId, scheduleId, or examType
+  termId?: string;
+  nowDate?: Date;
+}): Promise<ExamEligibilityResult> {
+  const gradeStr = String(params.grade);
+
+  // Fetch exam schedules for this grade
+  const [schedSnapStr, schedSnapNum] = await Promise.all([
+    getDocs(query(collection(db, "examSchedules"), where("grade", "==", gradeStr))),
+    !isNaN(Number(gradeStr))
+      ? getDocs(query(collection(db, "examSchedules"), where("grade", "==", Number(gradeStr))))
+      : Promise.resolve({ docs: [] as any[] }),
+  ]);
+
+  const allScheds: ExamSchedule[] = [];
+  const seenIds = new Set<string>();
+  [...schedSnapStr.docs, ...schedSnapNum.docs].forEach((d) => {
+    if (!seenIds.has(d.id)) {
+      seenIds.add(d.id);
+      allScheds.push({ id: d.id, ...d.data() } as ExamSchedule);
+    }
+  });
+
+  const normTarget = params.examId.trim().toLowerCase();
+  const schedule = allScheds.find((s) => {
+    if (s.id === params.examId) return true;
+    if (s.definedExamId && s.definedExamId === params.examId) return true;
+    if (s.examType && s.examType.toLowerCase() === normTarget) return true;
+    return false;
+  });
+
+  if (!schedule) {
+    return {
+      eligible: false,
+      status: "not_scheduled",
+      reason: "This exam has not been scheduled for your assigned class.",
+    };
+  }
+
+  // Check schedule approval
+  if (schedule.status !== "approved") {
+    const reason =
+      schedule.status === "pending_approval"
+        ? "The examination schedule is awaiting approval."
+        : "Exam schedule is currently in draft and awaiting review.";
+    return {
+      eligible: false,
+      status: "awaiting_approval",
+      reason,
+      schedule,
+    };
+  }
+
+  // Find subject entry in schedule.exams
+  const subjectEntry = schedule.exams?.find((e) => e.subjectId === params.subjectId);
+  if (!subjectEntry) {
+    return {
+      eligible: false,
+      status: "not_scheduled",
+      reason: "This subject is not included in the approved examination schedule.",
+      schedule,
+    };
+  }
+
+  // Check date completion
+  const dateCheck = isExamDateCompleted(subjectEntry.date, subjectEntry.endTime, params.nowDate);
+  if (!dateCheck.completed) {
+    return {
+      eligible: false,
+      status: "not_conducted",
+      reason: dateCheck.reason || "Exam not yet conducted.",
+      schedule,
+      subjectSchedule: subjectEntry,
+      scheduledDate: subjectEntry.date,
+      scheduledEndTime: subjectEntry.endTime,
+    };
+  }
+
+  // Check existing marks workflow status
+  const existingEntries = await fetchMarksEntriesForSection({
+    sessionId: params.sessionId || schedule.sessionId || "",
+    sectionId: params.sectionId,
+    subjectId: params.subjectId,
+    examId: schedule.definedExamId || schedule.id,
+    termId: params.termId || schedule.termId,
+  });
+
+  const existingList = Object.values(existingEntries);
+  const lockedEntry = existingList.find(
+    (e) => e.workflowStatus === "verified" || e.workflowStatus === "published" || e.workflowStatus === "locked"
+  );
+  if (lockedEntry) {
+    return {
+      eligible: false,
+      status: "locked",
+      reason: `This assessment is ${lockedEntry.workflowStatus.toUpperCase()} and cannot be edited.`,
+      schedule,
+      subjectSchedule: subjectEntry,
+      workflowStatus: lockedEntry.workflowStatus,
+      scheduledDate: subjectEntry.date,
+      scheduledEndTime: subjectEntry.endTime,
+    };
+  }
+
+  const submittedEntry = existingList.find((e) => e.workflowStatus === "submitted");
+  if (submittedEntry) {
+    return {
+      eligible: true,
+      status: "submitted",
+      reason: "Marks have already been submitted for this assessment.",
+      schedule,
+      subjectSchedule: subjectEntry,
+      workflowStatus: "submitted",
+      scheduledDate: subjectEntry.date,
+      scheduledEndTime: subjectEntry.endTime,
+    };
+  }
+
+  return {
+    eligible: true,
+    status: "available",
+    reason: "Available for Marks Entry",
+    schedule,
+    subjectSchedule: subjectEntry,
+    workflowStatus: existingList[0]?.workflowStatus || "draft",
+    scheduledDate: subjectEntry.date,
+    scheduledEndTime: subjectEntry.endTime,
+  };
+}
+
 export function buildMarksEntryDocId(params: {
   sessionId: string;
   grade: string;
@@ -795,7 +1047,6 @@ export async function fetchMarksEntriesForSection(params: {
       where("sessionId", "==", params.sessionId),
       where("sectionId", "==", params.sectionId),
       where("subjectId", "==", params.subjectId),
-      where("examId", "==", params.examId),
     ];
     if (params.termId) {
       constraints.push(where("termId", "==", params.termId));
@@ -803,12 +1054,18 @@ export async function fetchMarksEntriesForSection(params: {
     const q = query(collection(db, "marksEntries"), ...constraints);
     const snap = await getDocs(q);
     const map: Record<string, MarksEntryRecord> = {};
+    const normTarget = params.examId.trim().toLowerCase();
+
     snap.forEach((d) => {
       const data = d.data() as MarksEntryRecord;
-      const rec = { id: d.id, ...data };
-      if (data.studentUid) map[data.studentUid] = rec;
-      if (data.studentId) map[data.studentId] = rec;
-      if (data.studentDocId) map[data.studentDocId] = rec;
+      const recExamId = (data.examId || "").trim().toLowerCase();
+      // Match if examId matches directly, or includes/is included by normTarget
+      if (recExamId === normTarget || recExamId.includes(normTarget) || normTarget.includes(recExamId)) {
+        const rec = { id: d.id, ...data };
+        if (data.studentUid) map[data.studentUid] = rec;
+        if (data.studentId) map[data.studentId] = rec;
+        if (data.studentDocId) map[data.studentDocId] = rec;
+      }
     });
     return map;
   } catch (err) {
@@ -818,7 +1075,7 @@ export async function fetchMarksEntriesForSection(params: {
 }
 
 /**
- * Saves or updates student marks in bulk with deterministic calculations and audit logging.
+ * Saves or updates student marks in bulk with authoritative validation, deterministic calculations and audit logging.
  */
 export async function saveMarksEntriesBatch(params: {
   sessionId: string;
@@ -845,7 +1102,9 @@ export async function saveMarksEntriesBatch(params: {
   }[];
   targetStatus: MarksWorkflowStatus; // "draft" or "submitted"
   user: { uid: string; name: string; role: string };
+  isEditResubmission?: boolean;
 }): Promise<{ savedCount: number; errors: string[] }> {
+  // 1. Authoritative Teacher / HOD Authorization check
   const authCheck = await verifyMarksEntryAuthorization({
     userId: params.user.uid,
     userRole: params.user.role,
@@ -860,23 +1119,79 @@ export async function saveMarksEntriesBatch(params: {
 
   const effectiveTermId = params.termId || "term_1";
 
-  // Enforce workflow locking: Teachers cannot modify verified, published, or locked marks
-  if (params.user.role === "teacher") {
-    const existingEntries = await fetchMarksEntriesForSection({
+  // 2. Authoritative Exam Schedule & Date Completion Validation (unless admin override)
+  if (params.user.role !== "admin") {
+    const schedCheck = await validateExamScheduleEligibility({
       sessionId: params.sessionId,
+      grade: params.grade,
       sectionId: params.sectionId,
       subjectId: params.subjectId,
       examId: params.examId,
       termId: effectiveTermId,
     });
-    const existingList = Object.values(existingEntries);
-    const lockedEntry = existingList.find(
-      (e) => e.workflowStatus === "verified" || e.workflowStatus === "published" || e.workflowStatus === "locked"
+    // If not eligible and status is not 'submitted' (submitted marks can be edited)
+    if (!schedCheck.eligible && schedCheck.status !== "submitted") {
+      throw new Error(schedCheck.reason || "This assessment is not currently eligible for marks entry.");
+    }
+  }
+
+  // 3. Workflow Locking Check: Teachers cannot modify verified, published, or locked marks
+  const existingEntries = await fetchMarksEntriesForSection({
+    sessionId: params.sessionId,
+    sectionId: params.sectionId,
+    subjectId: params.subjectId,
+    examId: params.examId,
+    termId: effectiveTermId,
+  });
+  const existingList = Object.values(existingEntries);
+  const lockedEntry = existingList.find(
+    (e) => e.workflowStatus === "verified" || e.workflowStatus === "published" || e.workflowStatus === "locked"
+  );
+  if (lockedEntry && params.user.role !== "admin") {
+    throw new Error(
+      `Marks for this examination are currently ${lockedEntry.workflowStatus.toUpperCase()} and cannot be edited.`
     );
-    if (lockedEntry) {
-      throw new Error(
-        `Marks for this examination are currently ${lockedEntry.workflowStatus.toUpperCase()} and cannot be edited.`
-      );
+  }
+
+  // 4. Validate Student Roster Enrollment (every student must be actively enrolled in this section)
+  const enrollSnap = await getDocs(
+    query(
+      collection(db, "enrollments"),
+      where("sectionId", "==", params.sectionId),
+      where("status", "==", "active")
+    )
+  );
+  const validStudentUids = new Set<string>();
+  enrollSnap.docs.forEach((d) => {
+    const data = d.data();
+    if (data.studentId) validStudentUids.add(data.studentId);
+    if (data.studentUid) validStudentUids.add(data.studentUid);
+  });
+
+  for (const s of params.studentsMarks) {
+    const uidToCheck = s.studentDocId || s.studentUid || s.studentId;
+    if (validStudentUids.size > 0 && !validStudentUids.has(uidToCheck) && !validStudentUids.has(s.studentId)) {
+      throw new Error(`Student ${s.studentName} (${uidToCheck}) is not actively enrolled in section ${params.sectionId}.`);
+    }
+  }
+
+  // 5. Component Marks numeric and bounds validation
+  for (const s of params.studentsMarks) {
+    for (const comp of params.components) {
+      const input = s.componentInputs[comp.id];
+      if (input && input.status === "present" && input.marks !== null && input.marks !== undefined && (input.marks as any) !== "") {
+        const num = Number(input.marks);
+        if (isNaN(num)) {
+          throw new Error(`${s.studentName}: Value for ${comp.name} must be a valid number.`);
+        }
+        if (num < 0) {
+          throw new Error(`${s.studentName}: ${comp.name} marks cannot be negative (${num}).`);
+        }
+        const max = comp.testedMaxMarks ?? comp.maxMarks;
+        if (num > max) {
+          throw new Error(`${s.studentName}: ${comp.name} marks (${num}) exceed configured maximum of ${max}.`);
+        }
+      }
     }
   }
 
@@ -885,6 +1200,8 @@ export async function saveMarksEntriesBatch(params: {
   const batch = writeBatch(db);
 
   let savedCount = 0;
+  const previousStatus = existingList[0]?.workflowStatus || "none";
+  const isResubmission = existingList.some((e) => e.workflowStatus === "submitted");
 
   for (const s of params.studentsMarks) {
     const calc = calculateStudentExamMarks({
@@ -909,6 +1226,8 @@ export async function saveMarksEntriesBatch(params: {
       examId: params.examId,
       studentUid: canonicalUid,
     });
+
+    const existingRec = existingEntries[canonicalUid];
 
     const record: MarksEntryRecord = {
       id: docId,
@@ -938,8 +1257,10 @@ export async function saveMarksEntriesBatch(params: {
       isExempt: calc.isExempt,
       isPassed: calc.isPassed,
       workflowStatus: params.targetStatus,
-      enteredBy: params.user.uid,
-      enteredAt: now,
+      enteredBy: existingRec?.enteredBy || params.user.uid,
+      enteredAt: existingRec?.enteredAt || now,
+      updatedBy: params.user.uid,
+      updatedAt: now,
       ...(params.targetStatus === "submitted" ? { submittedAt: now } : {}),
     };
 
@@ -951,7 +1272,7 @@ export async function saveMarksEntriesBatch(params: {
     await batch.commit();
 
     await logAcademicAudit({
-      action: params.targetStatus === "submitted" ? "submit" : "update",
+      action: params.targetStatus === "submitted" ? (isResubmission ? "resubmit" as any : "submit") : "update",
       module: "marks",
       targetId: `${params.sectionId}_${params.subjectId}_${params.examId}`,
       targetName: `Marks for Section ${params.sectionId} - ${params.subjectId}`,
@@ -963,6 +1284,8 @@ export async function saveMarksEntriesBatch(params: {
       details: {
         studentCount: savedCount,
         status: params.targetStatus,
+        previousStatus,
+        isResubmission,
         structureVersion: params.structureVersion,
       },
       performedBy: {
@@ -1045,3 +1368,479 @@ export async function transitionMarksWorkflow(params: {
 
   return { count };
 }
+
+// ==========================================
+// 8. DISCIPLINE & RESULT WORKFLOW VALIDATION
+// ==========================================
+
+export const VALID_DISCIPLINE_GRADES: readonly DisciplineGrade[] = ["A", "B", "C", "D"] as const;
+
+/**
+ * Validates that a discipline grade is strictly A, B, C, or D.
+ * Never converts to numeric marks. Rejects invalid grades.
+ */
+export function validateDisciplineGrade(grade: unknown): DisciplineGrade {
+  if (typeof grade !== "string") {
+    throw new Error(`Invalid discipline grade: Expected string but received ${typeof grade}`);
+  }
+  const normalized = grade.trim().toUpperCase();
+  if (normalized === "A" || normalized === "B" || normalized === "C" || normalized === "D") {
+    return normalized as DisciplineGrade;
+  }
+  throw new Error(`Invalid discipline grade '${grade}'. Allowed values are strictly 'A', 'B', 'C', or 'D'.`);
+}
+
+/**
+ * Checks completeness of entered marks for a specific exam across all expected subjects and students in a section.
+ */
+export async function checkExamResultsCompleteness(params: {
+  sessionId: string;
+  sectionId: string;
+  examId: string;
+  expectedSubjectIds: string[];
+  enrolledStudentUids: string[];
+}): Promise<{
+  ready: boolean;
+  totalExpectedEntries: number;
+  enteredEntriesCount: number;
+  missingEntriesCount: number;
+  missingSubjectIds: string[];
+  missingStudentUids: string[];
+}> {
+  const { sessionId, sectionId, examId, expectedSubjectIds, enrolledStudentUids } = params;
+
+  const totalExpectedEntries = expectedSubjectIds.length * enrolledStudentUids.length;
+  if (totalExpectedEntries === 0) {
+    return {
+      ready: false,
+      totalExpectedEntries: 0,
+      enteredEntriesCount: 0,
+      missingEntriesCount: 0,
+      missingSubjectIds: [],
+      missingStudentUids: [],
+    };
+  }
+
+  const q = query(
+    collection(db, "marksEntries"),
+    where("sessionId", "==", sessionId),
+    where("sectionId", "==", sectionId),
+    where("examId", "==", examId)
+  );
+
+  const snap = await getDocs(q);
+  const enteredKeySet = new Set<string>();
+
+  snap.forEach((d) => {
+    const data = d.data() as MarksEntryRecord;
+    const stuKey = data.studentUid || data.studentId;
+    if (stuKey && data.subjectId) {
+      enteredKeySet.add(`${data.subjectId}_${stuKey}`);
+    }
+  });
+
+  const missingSubjectSet = new Set<string>();
+  const missingStudentSet = new Set<string>();
+  let missingCount = 0;
+
+  for (const subId of expectedSubjectIds) {
+    for (const stuUid of enrolledStudentUids) {
+      if (!enteredKeySet.has(`${subId}_${stuUid}`)) {
+        missingSubjectSet.add(subId);
+        missingStudentSet.add(stuUid);
+        missingCount++;
+      }
+    }
+  }
+
+  return {
+    ready: missingCount === 0 && snap.size >= totalExpectedEntries,
+    totalExpectedEntries,
+    enteredEntriesCount: snap.size,
+    missingEntriesCount: missingCount,
+    missingSubjectIds: Array.from(missingSubjectSet),
+    missingStudentUids: Array.from(missingStudentSet),
+  };
+}
+
+export interface PublishExamResultsParams {
+  sessionId: string;
+  grade: string;
+  sectionId: string;
+  examId: string;
+  examName?: string;
+  academicYear?: string;
+  user: { uid: string; name: string; role: string };
+}
+
+/**
+ * Publishes individual examination results for a section.
+ * Validates that user is Admin or assigned HOD for this section.
+ * Updates workflowStatus of all marksEntries for this exam to 'published'.
+ * Creates an authoritative record in 'examResultPublications'.
+ */
+export async function publishExamResults(params: {
+  sessionId: string;
+  grade: string;
+  sectionId: string;
+  examId: string;
+  examName?: string;
+  academicYear?: string;
+  user: { uid: string; name: string; role: string };
+}): Promise<{ success: boolean; count: number; publicationId: string }> {
+  const { sessionId, grade, sectionId, examId, user } = params;
+
+  // 1. Authorization check
+  if (user.role !== "admin") {
+    if (user.role !== "hod") {
+      throw new Error("Unauthorized: Only Admin or the assigned Head of Department (HOD) can publish exam results.");
+    }
+    // Verify HOD section assignment
+    const secDoc = await getDoc(doc(db, "sections", sectionId));
+    if (secDoc.exists()) {
+      const secData = secDoc.data();
+      const isDirectHod = secData.hodId === user.uid;
+      let isTeacherHod = false;
+      if (!isDirectHod && secData.classTeacherId) {
+        try {
+          const tDoc = await getDoc(doc(db, "teachers", secData.classTeacherId));
+          if (tDoc.exists() && Array.isArray(tDoc.data().hodIds) && tDoc.data().hodIds.includes(user.uid)) {
+            isTeacherHod = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!isDirectHod && !isTeacherHod) {
+        throw new Error(`Unauthorized: You are not assigned as Head of Department for section '${secData.name || sectionId}'.`);
+      }
+    }
+  }
+
+  // 2. Fetch marks entries
+  const q = query(
+    collection(db, "marksEntries"),
+    where("sessionId", "==", sessionId),
+    where("sectionId", "==", sectionId),
+    where("examId", "==", examId)
+  );
+
+  const snap = await getDocs(q);
+  if (snap.empty) {
+    throw new Error("No marks entries found for this examination in the selected section.");
+  }
+
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  let count = 0;
+
+  snap.forEach((d) => {
+    batch.update(d.ref, {
+      workflowStatus: "published",
+      publishedAt: now,
+      verifiedBy: user.uid,
+      verifiedAt: now,
+    });
+    count++;
+  });
+
+  // 3. Write publication record
+  const pubId = `${sessionId}_${sectionId}_${examId}`;
+  const pubRef = doc(db, "examResultPublications", pubId);
+  batch.set(
+    pubRef,
+    {
+      id: pubId,
+      sessionId,
+      academicYear: params.academicYear || "2026-27",
+      grade,
+      sectionId,
+      examId,
+      examName: params.examName || examId,
+      workflowStatus: "published",
+      publishedAt: now,
+      publishedBy: user.uid,
+      publishedByName: user.name,
+      totalEntries: count,
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  // 4. Academic audit log
+  await logAcademicAudit({
+    action: "publish",
+    module: "exam_results",
+    targetId: pubId,
+    targetName: `Exam Result Publication for ${params.examName || examId} (Grade ${grade} - Sec ${sectionId})`,
+    sessionId,
+    sectionId,
+    details: {
+      examId,
+      examName: params.examName || examId,
+      grade,
+      totalEntries: count,
+      publishedByUid: user.uid,
+    },
+    performedBy: {
+      uid: user.uid,
+      name: user.name,
+      role: user.role as any,
+    },
+  });
+
+  return { success: true, count, publicationId: pubId };
+}
+
+/**
+ * Saves Class Teacher Pending Details (Discipline, Co-Scholastic, Remarks).
+ * Validates that every discipline grade is strictly A, B, C, or D.
+ */
+export async function saveClassTeacherPendingDetails(params: {
+  sessionId: string;
+  sectionId: string;
+  studentUid: string;
+  disciplineGrades: Record<string, string>; // e.g. { term_1: "A", term_2: "B" }
+  coScholasticGrades?: Record<string, any>;
+  teacherRemarks?: string;
+  promotedToGrade?: string;
+  user: { uid: string; name: string; role: string };
+}): Promise<{ success: boolean; id: string }> {
+  const { sessionId, sectionId, studentUid, disciplineGrades, user } = params;
+
+  // 1. Authorization check
+  if (user.role !== "admin") {
+    // Check if user is the assigned Class Teacher
+    const secDoc = await getDoc(doc(db, "sections", sectionId));
+    if (secDoc.exists()) {
+      const secData = secDoc.data();
+      let isAssigned = secData.classTeacherId === user.uid;
+      if (!isAssigned && secData.classTeacherId) {
+        try {
+          const tDoc = await getDoc(doc(db, "teachers", secData.classTeacherId));
+          if (tDoc.exists() && (tDoc.data().uid === user.uid || tDoc.id === user.uid)) {
+            isAssigned = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!isAssigned) {
+        throw new Error(`Unauthorized: Only the assigned Class Teacher for section '${secData.name || sectionId}' or an Admin can enter report card details.`);
+      }
+    }
+  }
+
+  // 2. Validate all discipline grades strictly to A, B, C, or D
+  const validatedDiscipline: Record<string, DisciplineGrade> = {};
+  for (const [termKey, val] of Object.entries(disciplineGrades)) {
+    if (val) {
+      validatedDiscipline[termKey] = validateDisciplineGrade(val);
+    }
+  }
+
+  if (Object.keys(validatedDiscipline).length === 0) {
+    throw new Error("At least one term discipline grade (A, B, C, or D) must be provided.");
+  }
+
+  const detailId = `${sessionId}_${sectionId}_${studentUid}`;
+  const now = new Date().toISOString();
+
+  const dataToSave = {
+    id: detailId,
+    sessionId,
+    sectionId,
+    studentUid,
+    disciplineGrades: validatedDiscipline,
+    coScholasticGrades: params.coScholasticGrades || {},
+    teacherRemarks: params.teacherRemarks || "",
+    promotedToGrade: params.promotedToGrade || "",
+    updatedAt: now,
+    updatedBy: user.uid,
+    updatedByName: user.name,
+  };
+
+  await setDoc(doc(db, "reportCardPendingDetails", detailId), dataToSave, { merge: true });
+
+  // If a report card snapshot exists in draft status, update its fields too
+  const cardSnapRef = doc(db, "publishedReportCards", `${sessionId}_annual_${studentUid}`);
+  const cardSnap = await getDoc(cardSnapRef);
+  if (cardSnap.exists()) {
+    const cData = cardSnap.data();
+    if (cData.workflowStatus === "draft" || !cData.workflowStatus) {
+      await updateDoc(cardSnapRef, {
+        disciplineGrades: validatedDiscipline,
+        coScholasticGrades: params.coScholasticGrades || cData.coScholasticGrades || {},
+        teacherRemarks: params.teacherRemarks || cData.teacherRemarks || "",
+        promotedToGrade: params.promotedToGrade || cData.promotedToGrade || "",
+        updatedAt: now,
+      });
+    }
+  }
+
+  await logAcademicAudit({
+    action: "update",
+    module: "report_card_details",
+    targetId: detailId,
+    targetName: `Class Teacher pending details updated for student ${studentUid}`,
+    sessionId,
+    sectionId,
+    details: {
+      studentUid,
+      disciplineGrades: validatedDiscipline,
+      updatedBy: user.uid,
+    },
+    performedBy: {
+      uid: user.uid,
+      name: user.name,
+      role: user.role as any,
+    },
+  });
+
+  return { success: true, id: detailId };
+}
+
+/**
+ * Sequential E-Signing workflow for an Annual Report Card.
+ * Stages:
+ * 1. "class_teacher" -> advances to "teacher_signed"
+ * 2. "hod" -> advances to "hod_signed"
+ * 3. "principal" -> advances to "published" and locks document
+ */
+export async function signReportCardSequential(params: {
+  sessionId: string;
+  sectionId: string;
+  studentUid: string;
+  stage: "class_teacher" | "hod" | "principal";
+  user: { uid: string; name: string; role: string };
+}): Promise<{
+  success: boolean;
+  newStatus: "teacher_signed" | "hod_signed" | "published";
+  snapshot: any;
+}> {
+  const { sessionId, sectionId, studentUid, stage, user } = params;
+
+  // 1. Verify eligibility using existing authoritative signature verification
+  const sigRole = stage === "class_teacher" ? "class_teacher" : stage === "hod" ? "hod" : "admin";
+  const check = await verifyStudentReportCardSigner({
+    signerUid: user.uid,
+    signatoryRole: sigRole,
+    sectionId,
+    studentUid,
+    sessionId,
+  });
+
+  if (!check.authorized || !check.snapshot) {
+    throw new Error(`Signing authorization failed: ${check.reason || "Signer is not eligible or not assigned."}`);
+  }
+
+  // 2. Fetch or initialize report card document
+  const cardDocId = `${sessionId}_annual_${studentUid}`;
+  const cardRef = doc(db, "publishedReportCards", cardDocId);
+  const cardDoc = await getDoc(cardRef);
+
+  let currentStatus = "draft";
+  let existingData: any = {};
+  if (cardDoc.exists()) {
+    existingData = cardDoc.data();
+    currentStatus = existingData.workflowStatus || "draft";
+  }
+
+  // 3. Sequential Stage Validation
+  let nextStatus: "teacher_signed" | "hod_signed" | "published";
+
+  if (stage === "class_teacher") {
+    if (currentStatus !== "draft" && currentStatus !== "incomplete") {
+      throw new Error(`Invalid stage transition: Class Teacher can only sign when status is draft. Current status: '${currentStatus}'`);
+    }
+    nextStatus = "teacher_signed";
+  } else if (stage === "hod") {
+    if (currentStatus !== "teacher_signed") {
+      throw new Error(`Invalid stage transition: Head of Department can only sign after Class Teacher has signed. Current status: '${currentStatus}'`);
+    }
+    nextStatus = "hod_signed";
+  } else if (stage === "principal") {
+    if (currentStatus !== "hod_signed") {
+      throw new Error(`Invalid stage transition: Principal / Admin can only sign after Head of Department has signed. Current status: '${currentStatus}'`);
+    }
+    nextStatus = "published";
+  } else {
+    throw new Error(`Unknown signing stage: ${stage}`);
+  }
+
+  // 4. Update signatures snapshot and workflowStatus
+  const now = new Date().toISOString();
+  const signatures = existingData.signatures || {};
+
+  if (stage === "class_teacher") {
+    signatures.classTeacher = {
+      name: check.snapshot.displayName,
+      signatoryUid: check.snapshot.signatoryUid,
+      designation: check.snapshot.designation,
+      imageUrl: check.snapshot.imageUrl,
+      signedAt: check.snapshot.signedAt,
+    };
+  } else if (stage === "hod") {
+    signatures.hod = {
+      name: check.snapshot.displayName,
+      signatoryUid: check.snapshot.signatoryUid,
+      designation: check.snapshot.designation,
+      imageUrl: check.snapshot.imageUrl,
+      signedAt: check.snapshot.signedAt,
+    };
+  } else if (stage === "principal") {
+    signatures.principal = {
+      name: check.snapshot.displayName,
+      signatoryUid: check.snapshot.signatoryUid,
+      designation: "Principal",
+      imageUrl: check.snapshot.imageUrl,
+      signedAt: check.snapshot.signedAt,
+    };
+  }
+
+  const updatePayload: any = {
+    workflowStatus: nextStatus,
+    signatures,
+    updatedAt: now,
+  };
+
+  if (nextStatus === "published") {
+    updatePayload.publishedAt = now;
+    updatePayload.publishedBy = user.uid;
+    updatePayload.publishedByName = user.name;
+    updatePayload.isLocked = true;
+    updatePayload.lockedAt = now;
+  }
+
+  await setDoc(cardRef, updatePayload, { merge: true });
+
+  // 5. Audit Logging
+  await logAcademicAudit({
+    action: nextStatus === "published" ? "publish" : "signature_applied",
+    module: "report_card_signatures",
+    targetId: cardDocId,
+    targetName: `Report card e-signed (${stage}) for ${studentUid}`,
+    sessionId,
+    sectionId,
+    details: {
+      studentUid,
+      stage,
+      newStatus: nextStatus,
+      signerUid: user.uid,
+      signerName: check.snapshot.displayName,
+    },
+    performedBy: {
+      uid: user.uid,
+      name: user.name,
+      role: user.role as any,
+    },
+  });
+
+  return {
+    success: true,
+    newStatus: nextStatus,
+    snapshot: check.snapshot,
+  };
+}
+

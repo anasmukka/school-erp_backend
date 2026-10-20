@@ -340,14 +340,15 @@ service cloud.firestore {
     match /marksEntries/{entryId} {
       allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations' && (
         isAdmin() ||
-        getUserRole() in ['hod', 'teacher']
+        getUserRole() in ['hod', 'teacher'] ||
+        isTeacher()
       );
       // Teachers and HODs can create and update marks only if the record is not locked.
       // Admin retains override unlock capability.
-      allow create: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher']);
+      allow create: if isSignedIn() && (isAdmin() || getUserRole() in ['hod', 'teacher'] || isTeacher());
       allow update: if isSignedIn() && (
         isAdmin() ||
-        (getUserRole() in ['hod', 'teacher'] && resource.data.workflowStatus != 'locked')
+        ((getUserRole() in ['hod', 'teacher'] || isTeacher()) && resource.data.workflowStatus != 'locked')
       );
       allow delete: if isAdmin();
     }
@@ -367,6 +368,16 @@ service cloud.firestore {
         ))
       );
       allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /examResultPublications/{pubId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() == 'hod');
+    }
+
+    match /reportCardPendingDetails/{detailId} {
+      allow read: if isSignedIn() && !isPrintingDept() && getUserRole() != 'operations';
+      allow write: if isAdmin() || (isSignedIn() && getUserRole() in ['teacher', 'hod'] || isTeacher());
     }
 
     // ==========================================

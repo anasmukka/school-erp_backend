@@ -22,6 +22,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { User as UserIcon, CheckSquare, Square, Trash2, Loader2, Plus, Users, Search, GraduationCap } from "lucide-react";
 import { SearchInput } from "@/components/ui/SearchInput";
 import { resolveFileUrl } from "@/lib/objectStorage";
+import { TableSkeleton } from "@/components/common/Skeletons";
 
 const GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 
@@ -325,7 +326,9 @@ export default function Teachers() {
       </Card>
 
       {/* Empty State: Zero Teachers in Database */}
-      {teachers.length === 0 ? (
+      {loading && teachers.length === 0 ? (
+        <TableSkeleton rows={6} columns={5} />
+      ) : teachers.length === 0 ? (
         <Card className="border-dashed border-2 border-slate-200">
           <CardContent className="py-16 text-center flex flex-col items-center justify-center">
             <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-4">

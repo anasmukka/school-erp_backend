@@ -579,7 +579,40 @@ export async function buildReportCardPdfDocument(
     drawCell(doc, ML + actColW + termColW, y, termColW, 4.5, t2, { style: "bold", size: 7 });
     y += 4.5;
   });
-  y += 3.5;
+  y += 2.5;
+
+  // 4(B). Dedicated Discipline Assessment Table (4 Point Scale: A, B, C, D)
+  drawCell(doc, ML, y, TW, 5, "PART 2(B): DISCIPLINE ASSESSMENT (4 Point Scale: A, B, C, D)", {
+    dark: true,
+    style: "bold",
+    size: 7,
+    align: "center",
+  });
+  y += 5;
+
+  drawCell(doc, ML, y, actColW, 4.5, "Discipline Aspect / Applicable Period", { style: "bold", size: 6.5, shade: true, align: "left" });
+  drawCell(doc, ML + actColW, y, termColW, 4.5, "T1", { style: "bold", size: 6.5, shade: true });
+  drawCell(doc, ML + actColW + termColW, y, termColW, 4.5, "T2", { style: "bold", size: 6.5, shade: true });
+  y += 4.5;
+
+  // Resolve term-wise discipline grades
+  const disc = snapshot.disciplineGrades || {};
+  const discT1 = (disc as any).term_1 || (disc as any).term1 || (disc as any).T1 || "A";
+  const discT2 = (disc as any).term_2 || (disc as any).term2 || (disc as any).T2 || "A";
+
+  const disciplineAreas = [
+    { name: "Attendance & Punctuality", t1: discT1, t2: discT2 },
+    { name: "Sincerity & Classroom Behavior", t1: discT1, t2: discT2 },
+    { name: "Respect for School Rules & Peers", t1: discT1, t2: discT2 },
+  ];
+
+  disciplineAreas.forEach((area) => {
+    drawCell(doc, ML, y, actColW, 4, area.name, { align: "left", size: 6.5 });
+    drawCell(doc, ML + actColW, y, termColW, 4, area.t1, { style: "bold", size: 6.5 });
+    drawCell(doc, ML + actColW + termColW, y, termColW, 4, area.t2, { style: "bold", size: 6.5 });
+    y += 4;
+  });
+  y += 3;
 
   // 5. Remarks & Attendance Section (Phase 3 Slot)
   drawCell(doc, ML, y, TW, 5.5, "PART 3: ATTENDANCE & PROMOTION SUMMARY", {

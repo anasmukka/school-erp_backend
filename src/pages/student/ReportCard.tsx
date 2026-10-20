@@ -26,6 +26,7 @@ import {
   School,
   Loader2,
 } from "lucide-react";
+import { DetailPageSkeleton } from "@/components/common/Skeletons";
 
 type ReportPeriod = "term_1" | "term_2" | "annual";
 
@@ -209,10 +210,7 @@ export default function StudentReportCard() {
       </div>
 
       {loading ? (
-        <div className="py-20 flex flex-col items-center justify-center text-muted-foreground">
-          <Loader2 className="animate-spin h-8 w-8 text-primary mb-2" />
-          <p className="text-xs">Loading academic records...</p>
-        </div>
+        <DetailPageSkeleton />
       ) : !currentSnapshot ? (
         <Card className="rounded-2xl border-dashed border-2 p-12 text-center text-muted-foreground">
           <FileText size={48} className="mx-auto text-primary/30 mb-3" />

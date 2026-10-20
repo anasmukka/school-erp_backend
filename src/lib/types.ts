@@ -275,6 +275,8 @@ export interface DigitalSignature {
   signedAt: string; // ISO timestamp
 }
 
+export type DisciplineGrade = "A" | "B" | "C" | "D";
+
 export type ReportCardStatus = "draft" | "teacher_signed" | "hod_signed" | "principal_signed" | "published";
 
 export interface ReportCard {
@@ -721,7 +723,8 @@ export type AuditActionType =
   | "return"
   | "renew"
   | "stock_movement"
-  | "fine_waiver";
+  | "fine_waiver"
+  | "publish";
 
 export type AuditEntityType =
   | "printing"
@@ -736,7 +739,8 @@ export type AuditEntityType =
   | "fee_concession"
   | "fee_ledger"
   | "fee_head"
-  | "fee_payment";
+  | "fee_payment"
+  | "school_contact";
 
 export interface AuditLogRecord {
   id: string;

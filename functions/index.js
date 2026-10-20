@@ -20,12 +20,31 @@
  * - Use that 16-character password in the config above
  */
 
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+
+const {
+  processNotificationJob,
+  retryNotificationJob,
+  enqueueNotificationJob,
+} = require("./notifications/queue");
+const { runFeeReminderPass } = require("./notifications/feeReminders");
+const { handleWhatsAppWebhook } = require("./notifications/webhooks");
+const {
+  handleNoticePublished,
+  handleFeePaymentVerified,
+  handleReportCardPublished,
+  handleExamScheduleApproved,
+  handleHallTicketCreated,
+  handleAttendanceRecorded,
+} = require("./notifications/triggers");
+const { isEmailConfigured } = require("./notifications/providers/email");
+const { isWhatsAppConfigured } = require("./notifications/providers/whatsapp");
 
 initializeApp();
 const db = getFirestore();
@@ -783,3 +802,202 @@ exports.razorpayWebhook = onRequest(
     }
   }
 );
+
+/**
+ * ============================================================================
+ * CENTRALIZED NOTIFICATION SYSTEM CLOUD FUNCTIONS
+ * ============================================================================
+ */
+
+// 1. Queue Processor Trigger (when a job is created in notificationJobs)
+exports.processNotificationQueue = onDocumentCreated(
+  { document: "notificationJobs/{jobId}", region: "us-central1" },
+  async (event) => {
+    const jobId = event.params.jobId;
+    const data = event.data?.data();
+    if (!data || data.status !== "QUEUED") return;
+    try {
+      await processNotificationJob(db, jobId);
+    } catch (err) {
+      console.error(`Error processing job ${jobId}:`, err);
+    }
+  }
+);
+
+// 2. Scheduled Fee Reminder Engine (Runs daily at 08:00 AM)
+exports.scheduledFeeReminderEngine = onSchedule(
+  { schedule: "every day 08:00", timeZone: "Asia/Kolkata", region: "us-central1" },
+  async () => {
+    console.log("Running scheduled fee reminder engine pass...");
+    const stats = await runFeeReminderPass(db);
+    console.log("Scheduled fee reminder pass completed:", stats);
+  }
+);
+
+// 3. Manual Fee Reminder Pass (Callable by Admin/Accountant)
+exports.triggerFeeReminderPass = onCall(
+  { region: "us-central1" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+    const userDoc = await db.collection("users").doc(request.auth.uid).get();
+    const role = userDoc.data()?.role;
+    if (role !== "admin" && role !== "accountant") {
+      throw new HttpsError("permission-denied", "Only administrators or accountants can trigger fee reminders.");
+    }
+    const stats = await runFeeReminderPass(db);
+    return { success: true, stats };
+  }
+);
+
+// 4. Retry Notification Job (Callable by Admin)
+exports.retryNotificationJobCall = onCall(
+  { region: "us-central1" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+    const userDoc = await db.collection("users").doc(request.auth.uid).get();
+    if (userDoc.data()?.role !== "admin") {
+      throw new HttpsError("permission-denied", "Only administrators can retry notifications.");
+    }
+    const { jobId } = request.data || {};
+    if (!jobId) {
+      throw new HttpsError("invalid-argument", "Missing required jobId parameter.");
+    }
+    const result = await retryNotificationJob(db, jobId, request.auth.uid);
+    return result;
+  }
+);
+
+// 5. Authoritative Notification System Status & Provider Health
+exports.getNotificationSystemStatus = onCall(
+  { region: "us-central1" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+    const userDoc = await db.collection("users").doc(request.auth.uid).get();
+    if (userDoc.data()?.role !== "admin") {
+      throw new HttpsError("permission-denied", "Admin role required.");
+    }
+
+    const emailConfigured = isEmailConfigured();
+    const whatsappConfigured = isWhatsAppConfigured();
+    const fcmConfigured = true; // Firebase Admin messaging is provisioned
+
+    // Aggregate queue metrics from Firestore
+    const jobsSnap = await db.collection("notificationJobs").get();
+    const totalJobs = jobsSnap.size;
+    let pendingCount = 0;
+    let deliveredCount = 0;
+    let failedCount = 0;
+    let retryCount = 0;
+
+    jobsSnap.forEach((d) => {
+      const st = d.data().status;
+      if (st === "QUEUED" || st === "PROCESSING") pendingCount++;
+      else if (st === "DELIVERED" || st === "SENT") deliveredCount++;
+      else if (st === "FAILED" || st === "PERMANENT_FAILURE") failedCount++;
+      else if (st === "RETRY_SCHEDULED") retryCount++;
+    });
+
+    return {
+      providers: {
+        email: {
+          configured: emailConfigured,
+          senderEmail: process.env.EMAIL_USER || null,
+        },
+        whatsapp: {
+          configured: whatsappConfigured,
+          phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || null,
+          apiVersion: process.env.WHATSAPP_API_VERSION || "v20.0",
+        },
+        fcm: {
+          configured: fcmConfigured,
+        },
+      },
+      queue: {
+        totalJobs,
+        pendingCount,
+        deliveredCount,
+        failedCount,
+        retryCount,
+      },
+    };
+  }
+);
+
+// 6. Meta WhatsApp Webhook Endpoint
+exports.whatsappWebhook = onRequest(
+  { region: "us-central1" },
+  async (req, res) => {
+    await handleWhatsAppWebhook(req, res, db);
+  }
+);
+
+// 7. Event Triggers across ERP Workflows
+exports.onNoticeCreated = onDocumentCreated(
+  { document: "notices/{noticeId}", region: "us-central1" },
+  async (event) => {
+    const noticeId = event.params.noticeId;
+    const noticeData = event.data?.data();
+    if (!noticeData) return;
+    await handleNoticePublished(db, noticeId, noticeData);
+  }
+);
+
+exports.onFeePaymentCreated = onDocumentCreated(
+  { document: "feePayments/{paymentId}", region: "us-central1" },
+  async (event) => {
+    const paymentId = event.params.paymentId;
+    const paymentData = event.data?.data();
+    if (!paymentData) return;
+    await handleFeePaymentVerified(db, paymentId, paymentData);
+  }
+);
+
+exports.onReportCardPublished = onDocumentCreated(
+  { document: "publishedReportCards/{cardId}", region: "us-central1" },
+  async (event) => {
+    const cardId = event.params.cardId;
+    const cardData = event.data?.data();
+    if (!cardData) return;
+    await handleReportCardPublished(db, cardId, cardData);
+  }
+);
+
+exports.onExamScheduleUpdated = onDocumentUpdated(
+  { document: "examSchedules/{scheduleId}", region: "us-central1" },
+  async (event) => {
+    const scheduleId = event.params.scheduleId;
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) return;
+    if (after.status === "approved" && before?.status !== "approved") {
+      await handleExamScheduleApproved(db, scheduleId, after);
+    }
+  }
+);
+
+exports.onHallTicketCreated = onDocumentCreated(
+  { document: "hallTickets/{ticketId}", region: "us-central1" },
+  async (event) => {
+    const ticketId = event.params.ticketId;
+    const ticketData = event.data?.data();
+    if (!ticketData) return;
+    await handleHallTicketCreated(db, ticketId, ticketData);
+  }
+);
+
+exports.onAttendanceRecorded = onDocumentCreated(
+  { document: "attendance/{attendanceId}", region: "us-central1" },
+  async (event) => {
+    const attId = event.params.attendanceId;
+    const attData = event.data?.data();
+    if (!attData) return;
+    await handleAttendanceRecorded(db, attId, attData);
+  }
+);
+

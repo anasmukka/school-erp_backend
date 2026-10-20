@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { usePaymentCapability } from "@/lib/payments";
 import { OnlinePaymentStatusBadge } from "@/components/OnlinePaymentStatus";
 import { Card, CardContent } from "@/components/ui/card";
+import { TableSkeleton } from "@/components/common/Skeletons";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -1157,9 +1158,7 @@ export default function FeesManagement() {
             </div>
 
             {loadingStructures ? (
-              <div className="rounded-xl border border-border px-4 py-10 text-center text-sm text-muted-foreground">
-                Loading fee structures...
-              </div>
+              <TableSkeleton rows={4} columns={4} />
             ) : displayedStructures.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
                 No fee structures found for this session filter. Create the first class plan above.

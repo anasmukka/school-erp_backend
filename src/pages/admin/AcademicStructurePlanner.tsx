@@ -66,6 +66,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { PageSkeleton } from "@/components/common/Skeletons";
 import {
   Layers,
   BookOpen,
@@ -735,6 +736,10 @@ export default function AcademicStructurePlanner() {
       return { ...prev, areas: updated };
     });
   };
+
+  if (loading && structures.length === 0) {
+    return <PageSkeleton />;
+  }
 
   return (
     <div data-testid="academic-structure-planner" className="space-y-6">
