@@ -170,8 +170,25 @@ service cloud.firestore {
     }
 
     match /students/{studentId} {
-      // Operations needs read access to search student names for library circulation and uniform issues
-      allow read: if isSignedIn() && !isPrintingDept();
+      allow read: if isSignedIn() && !isPrintingDept() && (
+        isAdmin() ||
+        isStaff() ||
+        isOperations() ||
+        studentId == request.auth.uid ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.authUid == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid ||
+        ('studentUid' in getUserData() && (resource.data.studentUid == getUserData().studentUid || studentId == getUserData().studentUid)) ||
+        ('studentDocId' in getUserData() && studentId == getUserData().studentDocId) ||
+        ('studentId' in getUserData() && studentId == getUserData().studentId) ||
+        ('email' in getUserData() && resource.data.email == getUserData().email) ||
+        (getUserRole() == 'parent' && 'linkedStudentUids' in getUserData() && (
+          studentId in getUserData().linkedStudentUids ||
+          resource.data.uid in getUserData().linkedStudentUids ||
+          resource.data.authUid in getUserData().linkedStudentUids ||
+          resource.data.studentUid in getUserData().linkedStudentUids
+        ))
+      );
       allow create: if (isAdmin() || (isSignedIn() && getUserRole() == 'hod')) && hasNoSensitiveAuthFields(request.resource.data);
       allow update: if (isAdmin() || (isSignedIn() && getUserRole() == 'hod')) && hasNoSensitiveAuthFields(request.resource.data);
       allow delete: if isAdmin();

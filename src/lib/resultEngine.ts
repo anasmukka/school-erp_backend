@@ -1283,12 +1283,12 @@ export async function invalidateReportCardSignaturesOnMarksChange(params: {
     subjectId,
     details: {
       studentUid,
-      previousWorkflowStatus: cardData.workflowStatus,
+      previousWorkflowStatus: cardData.workflowStatus || null,
       newWorkflowStatus: "draft",
       invalidatedStages,
       originalMarks: originalMarks || null,
       updatedMarks: updatedMarks || null,
-      reason: invalidationReason,
+      reason: invalidationReason || null,
     },
     performedBy: {
       uid: user.uid,
@@ -1651,7 +1651,7 @@ export async function transitionMarksWorkflow(params: {
       details: {
         newStatus: params.targetStatus,
         affectedCount: count,
-        reason: params.reason || undefined,
+        reason: params.reason || null,
       },
       performedBy: {
         uid: params.user.uid,

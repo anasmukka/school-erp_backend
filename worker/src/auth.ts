@@ -117,7 +117,7 @@ export async function verifyFirebaseToken(
     throw new Error("JWT decode failed: malformed base64url segments");
   }
 
-  const projectId = env.FIREBASE_PROJECT_ID || "schoolerpv2";
+  const projectId = env.FIREBASE_PROJECT_ID || "prestige-erp";
   const expectedIssuer = `https://securetoken.google.com/${projectId}`;
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -221,7 +221,7 @@ export async function resolveErpUser(
   env: Env,
   idToken: string
 ): Promise<AuthenticatedUser> {
-  const projectId = env.FIREBASE_PROJECT_ID || "schoolerpv2";
+  const projectId = env.FIREBASE_PROJECT_ID || "prestige-erp";
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${uid}`;
 
   try {

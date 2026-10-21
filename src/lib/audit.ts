@@ -16,18 +16,25 @@ const SENSITIVE_KEY_PATTERNS = [
 ];
 
 /**
- * Recursively redacts sensitive authentication keys from metadata and details objects.
+ * Recursively redacts sensitive authentication keys from metadata and details objects,
+ * and strips any undefined values so Firestore writes do not fail.
  */
 export function sanitizeAuditData<T>(data: T): T {
   if (data === null || data === undefined) return data;
   if (typeof data !== "object") return data;
 
   if (Array.isArray(data)) {
-    return data.map((item) => sanitizeAuditData(item)) as unknown as T;
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeAuditData(item)) as unknown as T;
   }
 
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (value === undefined) {
+      // Omit undefined values to maintain Firestore schema compatibility
+      continue;
+    }
     const isSensitive = SENSITIVE_KEY_PATTERNS.some((pattern) => pattern.test(key));
     if (isSensitive) {
       sanitized[key] = "[REDACTED]";
