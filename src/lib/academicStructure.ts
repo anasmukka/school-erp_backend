@@ -76,6 +76,7 @@ export interface SubjectAssessmentOverride {
   subjectId: string;
   useCustomComponents?: boolean;
   termOverrides: Record<string, SubjectTermOverride>; // Keyed by termId (e.g. "term_1", "term_2")
+  isOptional?: boolean;
 }
 
 export interface ScholasticOverallConfig {
@@ -318,6 +319,25 @@ export interface StructureSubjectEntry {
   order: number;
   grade?: string;
   enabledOnReportCard?: boolean;
+  isOptional?: boolean;
+}
+
+/**
+ * Determines whether a subject is optional in the active academic structure or subject catalog.
+ */
+export function isSubjectOptional(params: {
+  subjectId: string;
+  subject?: { isOptional?: boolean };
+  structureVersion?: AcademicStructureVersion | null;
+}): boolean {
+  if (params.subject?.isOptional) return true;
+  if (params.structureVersion) {
+    const entry = params.structureVersion.subjects?.find((s) => s.subjectId === params.subjectId);
+    if (entry?.isOptional) return true;
+    const override = params.structureVersion.subjectOverrides?.[params.subjectId];
+    if (override?.isOptional) return true;
+  }
+  return false;
 }
 
 export interface AcademicStructureVersion {

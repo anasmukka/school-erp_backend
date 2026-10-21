@@ -594,8 +594,11 @@ export default function ResultVerification() {
                         if (rec) {
                           hasAnyMarks = true;
                           const score = rec.scaledTotalMarks ?? rec.totalRawMarks;
-                          totalEarned += score;
-                          totalMax += rec.totalMaxMarks;
+                          const isExemptOptional = Boolean((sub.isOptional || rec.isOptional) && rec.isExempt);
+                          if (!isExemptOptional) {
+                            totalEarned += score;
+                            totalMax += rec.totalMaxMarks;
+                          }
                           return (
                             <td key={sub.id} className="p-3 text-center">
                               {rec.isAbsent ? (
@@ -615,16 +618,22 @@ export default function ResultVerification() {
                         );
                       })}
                       <td className="p-3 text-center font-bold text-slate-900">
-                        {hasAnyMarks ? Math.round(totalEarned) : "—"}
+                        {hasAnyMarks ? (totalMax > 0 ? Math.round(totalEarned) : "EX") : "—"}
                       </td>
                       <td className="p-3 text-center font-semibold text-slate-800">
-                        {hasAnyMarks && totalMax > 0 ? `${((totalEarned / totalMax) * 100).toFixed(1)}%` : "—"}
+                        {hasAnyMarks ? (totalMax > 0 ? `${((totalEarned / totalMax) * 100).toFixed(1)}%` : "EX") : "—"}
                       </td>
                       <td className="p-3 text-center">
-                        {hasAnyMarks && totalMax > 0 ? (
-                          <Badge variant="outline" className="text-primary font-bold">
-                            {totalEarned / totalMax >= 0.8 ? "A" : totalEarned / totalMax >= 0.6 ? "B" : totalEarned / totalMax >= 0.4 ? "C" : "D"}
-                          </Badge>
+                        {hasAnyMarks ? (
+                          totalMax > 0 ? (
+                            <Badge variant="outline" className="text-primary font-bold">
+                              {totalEarned / totalMax >= 0.8 ? "A" : totalEarned / totalMax >= 0.6 ? "B" : totalEarned / totalMax >= 0.4 ? "C" : "D"}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-amber-600 border-amber-300 font-bold">
+                              EX
+                            </Badge>
+                          )
                         ) : "—"}
                       </td>
                     </tr>

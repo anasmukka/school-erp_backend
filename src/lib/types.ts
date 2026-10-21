@@ -161,6 +161,7 @@ export interface Subject {
   category?: SubjectCategory;
   order?: number;
   maxMarks?: number;
+  isOptional?: boolean;
 }
 
 export interface SubjectAssignment {

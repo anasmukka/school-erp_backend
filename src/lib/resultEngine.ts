@@ -21,9 +21,11 @@ import {
   CoScholasticSectionConfig,
   DiscreteGradingScale,
   getEffectiveComponentsForSubject,
+  isSubjectOptional,
+  getActiveStructureForGrade,
 } from "./academicStructure";
 import { logAcademicAudit } from "./audit";
-import type { ExamSchedule, ExamSubjectEntry, Enrollment, DisciplineGrade } from "./types";
+import type { ExamSchedule, ExamSubjectEntry, Enrollment, DisciplineGrade, Subject, Student, Section } from "./types";
 import { verifyStudentReportCardSigner } from "./signatures";
 
 // ==========================================
@@ -65,6 +67,7 @@ export interface MarksEntryRecord {
   calculatedGrade: string;
   isAbsent: boolean;
   isExempt: boolean;
+  isOptional?: boolean;
   isPassed: boolean;
   workflowStatus: MarksWorkflowStatus;
   enteredBy: string;
@@ -90,6 +93,7 @@ export interface TermSubjectPerformance {
   grade: string;
   isAbsent: boolean;
   isExempt: boolean;
+  isOptional?: boolean;
   isPassed: boolean;
 }
 
@@ -97,6 +101,8 @@ export interface CalculatedSubjectResult {
   subjectId: string;
   subjectName: string;
   category: "scholastic" | "co-scholastic";
+  isOptional?: boolean;
+  isExempt?: boolean;
   term1?: TermSubjectPerformance;
   term2?: TermSubjectPerformance;
   terms?: Record<string, TermSubjectPerformance>; // keyed by termId (e.g. "term_1", "term_2")
@@ -324,6 +330,7 @@ export function calculateStudentExamMarks(params: {
   calculatedGrade: string;
   isAbsent: boolean;
   isExempt: boolean;
+  isOptional?: boolean;
   isPassed: boolean;
   errors: string[];
 } {
@@ -539,25 +546,49 @@ export function calculateSubjectTermAndOverall(params: {
   };
   calculationConfig: CalculationConfiguration;
   gradingScale: GradingScale;
+  isOptional?: boolean;
 }): {
   overallTotal: number;
   overallMax: number;
   overallPercentage: number;
   overallGrade: string;
   isPassed: boolean;
+  isExempt: boolean;
 } {
   const { terms, calculationConfig, gradingScale } = params;
   const { term1, term2 } = terms;
 
   let overallTotal = 0;
   let overallMax = 0;
+  let isSubjectExempt = false;
 
-  if (term1 && !term2) {
+  // Handle term exemptions: if both terms are exempt
+  if (term1?.isExempt && term2?.isExempt) {
+    return {
+      overallTotal: 0,
+      overallMax: 0,
+      overallPercentage: 0,
+      overallGrade: "EX",
+      isPassed: true,
+      isExempt: true,
+    };
+  }
+
+  // If one term is exempt, the other active term represents overall evaluation
+  if (term1?.isExempt && term2 && !term2.isExempt) {
+    overallTotal = term2.examTotal;
+    overallMax = term2.examMax;
+  } else if (term2?.isExempt && term1 && !term1.isExempt) {
     overallTotal = term1.examTotal;
     overallMax = term1.examMax;
+  } else if (term1 && !term2) {
+    overallTotal = term1.examTotal;
+    overallMax = term1.examMax;
+    isSubjectExempt = Boolean(term1.isExempt);
   } else if (!term1 && term2) {
     overallTotal = term2.examTotal;
     overallMax = term2.examMax;
+    isSubjectExempt = Boolean(term2.isExempt);
   } else if (term1 && term2) {
     const mode = calculationConfig.termWeighting?.mode || "equal_average";
 
@@ -585,8 +616,19 @@ export function calculateSubjectTermAndOverall(params: {
     }
   }
 
+  if (overallMax === 0) {
+    return {
+      overallTotal: 0,
+      overallMax: 0,
+      overallPercentage: 0,
+      overallGrade: isSubjectExempt ? "EX" : "—",
+      isPassed: isSubjectExempt,
+      isExempt: isSubjectExempt,
+    };
+  }
+
   overallTotal = applyRounding(overallTotal, calculationConfig.roundingRule, calculationConfig.decimalPlaces);
-  const rawPct = overallMax > 0 ? (overallTotal / overallMax) * 100 : 0;
+  const rawPct = (overallTotal / overallMax) * 100;
   const overallPercentage = applyRounding(rawPct, calculationConfig.roundingRule, calculationConfig.decimalPlaces);
   const overallGrade = resolveGrade(overallPercentage, gradingScale);
   const minPass = calculationConfig.institutionalPassCriteria?.minSubjectPercentage ?? gradingScale.passingPercentage;
@@ -598,6 +640,7 @@ export function calculateSubjectTermAndOverall(params: {
     overallPercentage,
     overallGrade,
     isPassed,
+    isExempt: isSubjectExempt,
   };
 }
 
@@ -605,9 +648,19 @@ export const calculateAnnualSubjectResult = calculateSubjectTermAndOverall;
 
 /**
  * Evaluates institutional pass/fail status and grand totals across all scholastic subjects.
+ * Excludes exempt optional subjects from calculation denominator when required by configured rules.
  */
 export function evaluateInstitutionalResult(params: {
-  scholasticResults: { overallTotal: number; overallMax: number; overallPercentage: number; isPassed: boolean }[];
+  scholasticResults: {
+    overallTotal: number;
+    overallMax: number;
+    overallPercentage: number;
+    isPassed: boolean;
+    isExempt?: boolean;
+    isOptional?: boolean;
+    subjectId?: string;
+    subjectName?: string;
+  }[];
   calculationConfig: CalculationConfiguration;
   gradingScale: GradingScale;
 }): {
@@ -622,29 +675,62 @@ export function evaluateInstitutionalResult(params: {
   let grandTotal = 0;
   let grandMax = 0;
   let failedSubjectsCount = 0;
+  let eligibleSubjectsCount = 0;
 
-  const minSubjectPct = calculationConfig.institutionalPassCriteria?.minSubjectPercentage ?? gradingScale.passingPercentage;
-  const minOverallPct = calculationConfig.institutionalPassCriteria?.minOverallPercentage ?? gradingScale.passingPercentage;
-  const maxCompartment = calculationConfig.institutionalPassCriteria?.maxFailingSubjectsForCompartment ?? 1;
+  const minSubjectPct =
+    calculationConfig.institutionalPassCriteria?.minSubjectPercentage ??
+    gradingScale.passingPercentage;
+  const minOverallPct =
+    calculationConfig.institutionalPassCriteria?.minOverallPercentage ??
+    gradingScale.passingPercentage;
+  const maxCompartment =
+    calculationConfig.institutionalPassCriteria?.maxFailingSubjectsForCompartment ?? 1;
 
   for (const res of scholasticResults) {
+    // If the subject is optional AND the student is marked exempt,
+    // exclude it from the assessment denominator and grand total.
+    if (res.isOptional && res.isExempt) {
+      continue;
+    }
+
+    // For non-optional subjects marked EX, follow the existing institutional exemption policy:
+    // They are counted in grandMax, but are NEVER counted as failed.
+    if (res.isExempt) {
+      grandTotal += res.overallTotal;
+      grandMax += res.overallMax;
+      eligibleSubjectsCount += 1;
+      continue;
+    }
+
     grandTotal += res.overallTotal;
     grandMax += res.overallMax;
+    eligibleSubjectsCount += 1;
+
     if (res.overallPercentage < minSubjectPct) {
       failedSubjectsCount += 1;
     }
   }
 
+  // Handle case where no eligible assessments contribute (avoids division by zero, NaN, Infinity)
+  if (grandMax === 0 || eligibleSubjectsCount === 0) {
+    const hasAnyExempt = scholasticResults.some((r) => r.isExempt);
+    return {
+      grandTotal: 0,
+      grandMax: 0,
+      grandPercentage: 0,
+      grandGrade: hasAnyExempt ? "EX" : "—",
+      resultStatus: "WITHHELD",
+    };
+  }
+
   grandTotal = applyRounding(grandTotal, calculationConfig.roundingRule, calculationConfig.decimalPlaces);
-  const rawGrandPct = grandMax > 0 ? (grandTotal / grandMax) * 100 : 0;
+  const rawGrandPct = (grandTotal / grandMax) * 100;
   const grandPercentage = applyRounding(rawGrandPct, calculationConfig.roundingRule, calculationConfig.decimalPlaces);
   const grandGrade = resolveGrade(grandPercentage, gradingScale);
 
   let resultStatus: "PASSED" | "FAILED" | "COMPARTMENT" | "WITHHELD" = "PASSED";
 
-  if (scholasticResults.length === 0) {
-    resultStatus = "WITHHELD";
-  } else if (failedSubjectsCount === 0 && grandPercentage >= minOverallPct) {
+  if (failedSubjectsCount === 0 && grandPercentage >= minOverallPct) {
     resultStatus = "PASSED";
   } else if (failedSubjectsCount <= maxCompartment) {
     resultStatus = "COMPARTMENT";
@@ -663,6 +749,7 @@ export function evaluateInstitutionalResult(params: {
 
 /**
  * Computes scholastic totals, overall percentage, letter grade, and pass status for a single term.
+ * Excludes exempt optional subjects from term totals and denominator.
  */
 export function calculateTermResult(params: {
   termId: "term_1" | "term_2" | string;
@@ -673,6 +760,8 @@ export function calculateTermResult(params: {
     totalMarks: number;
     maxMarks: number;
     percentage: number;
+    isExempt?: boolean;
+    isOptional?: boolean;
   }[];
   gradingScale: GradingScale;
   calculationConfig?: CalculationConfiguration;
@@ -687,19 +776,41 @@ export function calculateTermResult(params: {
   let termTotal = 0;
   let termMax = 0;
   let failedCount = 0;
+  let eligibleCount = 0;
 
   const minSubPct = calculationConfig?.institutionalPassCriteria?.minSubjectPercentage ?? gradingScale.passingPercentage;
   const minOverallPct = calculationConfig?.institutionalPassCriteria?.minOverallPercentage ?? gradingScale.passingPercentage;
 
   for (const s of scholasticResults) {
+    if (s.isOptional && s.isExempt) {
+      continue;
+    }
+    if (s.isExempt) {
+      termTotal += s.totalMarks;
+      termMax += s.maxMarks;
+      eligibleCount += 1;
+      continue;
+    }
     termTotal += s.totalMarks;
     termMax += s.maxMarks;
+    eligibleCount += 1;
     if (s.percentage < minSubPct) {
       failedCount += 1;
     }
   }
 
-  const rawPct = termMax > 0 ? (termTotal / termMax) * 100 : 0;
+  if (termMax === 0 || eligibleCount === 0) {
+    const hasAnyExempt = scholasticResults.some((s) => s.isExempt);
+    return {
+      termTotal: 0,
+      termMax: 0,
+      termPercentage: 0,
+      termGrade: hasAnyExempt ? "EX" : "—",
+      isPassed: true,
+    };
+  }
+
+  const rawPct = (termTotal / termMax) * 100;
   const termPercentage = applyRounding(rawPct, calculationConfig?.roundingRule || "round_half_up", calculationConfig?.decimalPlaces ?? 2);
   const termGrade = resolveGrade(termPercentage, gradingScale);
   const isPassed = failedCount === 0 && termPercentage >= minOverallPct;
@@ -1076,6 +1187,124 @@ export async function fetchMarksEntriesForSection(params: {
 }
 
 /**
+ * Invalidates sequential e-signatures on in-progress report cards when marks are modified.
+ * Historical published documents (workflowStatus === "published" or isLocked === true) are protected
+ * and preserved without alteration.
+ */
+export async function invalidateReportCardSignaturesOnMarksChange(params: {
+  sessionId: string;
+  sectionId: string;
+  studentUid: string;
+  subjectId: string;
+  examId: string;
+  user: { uid: string; name: string; role: string };
+  originalMarks?: {
+    totalRaw: number;
+    totalMax: number;
+    percentage: number;
+    grade: string;
+    isExempt?: boolean;
+    isAbsent?: boolean;
+  };
+  updatedMarks?: {
+    totalRaw: number;
+    totalMax: number;
+    percentage: number;
+    grade: string;
+    isExempt?: boolean;
+    isAbsent?: boolean;
+  };
+  reason?: string;
+}): Promise<{
+  invalidated: boolean;
+  isPublished?: boolean;
+  invalidatedStages?: string[];
+  reason?: string;
+}> {
+  const { sessionId, sectionId, studentUid, subjectId, examId, user, originalMarks, updatedMarks, reason } = params;
+  const cardDocId = `${sessionId}_annual_${studentUid}`;
+  const cardRef = doc(db, "publishedReportCards", cardDocId);
+  const cardDoc = await getDoc(cardRef);
+
+  if (!cardDoc.exists()) {
+    return { invalidated: false, reason: "No report card snapshot exists for student." };
+  }
+
+  const cardData = cardDoc.data() as any;
+
+  // IMPORTANT: Already published and finalized report cards must not be silently rewritten
+  // or have their historical signatures removed.
+  if (cardData.workflowStatus === "published" || cardData.isLocked === true) {
+    return {
+      invalidated: false,
+      isPublished: true,
+      reason: "Historical report card is already published and locked. Signatures preserved.",
+    };
+  }
+
+  // Check if any signatures were applied
+  const sigs = cardData.signatures || {};
+  const invalidatedStages: string[] = [];
+
+  if (sigs.classTeacher) invalidatedStages.push("class_teacher");
+  if (sigs.hod) invalidatedStages.push("hod");
+  if (sigs.principal) invalidatedStages.push("principal");
+
+  if (invalidatedStages.length === 0 && cardData.workflowStatus === "draft") {
+    return { invalidated: false, reason: "Report card is in draft with no signatures applied." };
+  }
+
+  const now = new Date().toISOString();
+  const invalidationReason =
+    reason || `Marks modified for subject '${subjectId}' in exam '${examId}' after initial signature stage.`;
+
+  // Authoritatively reset workflowStatus to "draft" and clear signatures so sequential review restarts
+  await updateDoc(cardRef, {
+    workflowStatus: "draft",
+    "signatures.classTeacher": null,
+    "signatures.hod": null,
+    "signatures.principal": null,
+    signatureInvalidatedAt: now,
+    signatureInvalidatedBy: user.uid,
+    signatureInvalidatedByName: user.name,
+    signatureInvalidationReason: invalidationReason,
+    signatureInvalidatedStages: invalidatedStages,
+    updatedAt: now,
+  });
+
+  // Preserve audit trail in academicAudits
+  await logAcademicAudit({
+    action: "signature_invalidated" as any,
+    module: "report_card_signatures",
+    targetId: cardDocId,
+    targetName: `Report card signatures invalidated for ${studentUid}`,
+    sessionId,
+    sectionId,
+    subjectId,
+    details: {
+      studentUid,
+      previousWorkflowStatus: cardData.workflowStatus,
+      newWorkflowStatus: "draft",
+      invalidatedStages,
+      originalMarks: originalMarks || null,
+      updatedMarks: updatedMarks || null,
+      reason: invalidationReason,
+    },
+    performedBy: {
+      uid: user.uid,
+      name: user.name,
+      role: user.role as any,
+    },
+  });
+
+  return {
+    invalidated: true,
+    invalidatedStages,
+    reason: invalidationReason,
+  };
+}
+
+/**
  * Saves or updates student marks in bulk with authoritative validation, deterministic calculations and audit logging.
  */
 export async function saveMarksEntriesBatch(params: {
@@ -1104,6 +1333,7 @@ export async function saveMarksEntriesBatch(params: {
   targetStatus: MarksWorkflowStatus; // "draft" or "submitted"
   user: { uid: string; name: string; role: string };
   isEditResubmission?: boolean;
+  isOptional?: boolean;
 }): Promise<{ savedCount: number; errors: string[] }> {
   // 1. Authoritative Teacher / HOD Authorization check
   const authCheck = await verifyMarksEntryAuthorization({
@@ -1230,6 +1460,44 @@ export async function saveMarksEntriesBatch(params: {
 
     const existingRec = existingEntries[canonicalUid];
 
+    // Check if marks actually changed for this student
+    const marksChanged =
+      existingRec &&
+      (existingRec.totalRawMarks !== calc.totalRawMarks ||
+        existingRec.calculatedGrade !== calc.calculatedGrade ||
+        existingRec.isExempt !== calc.isExempt ||
+        existingRec.isAbsent !== calc.isAbsent);
+
+    if (marksChanged) {
+      await invalidateReportCardSignaturesOnMarksChange({
+        sessionId: params.sessionId,
+        sectionId: params.sectionId,
+        studentUid: canonicalUid,
+        subjectId: params.subjectId,
+        examId: params.examId,
+        user: params.user,
+        originalMarks: {
+          totalRaw: existingRec.totalRawMarks,
+          totalMax: existingRec.totalMaxMarks,
+          percentage: existingRec.calculatedPercentage,
+          grade: existingRec.calculatedGrade,
+          isExempt: existingRec.isExempt,
+          isAbsent: existingRec.isAbsent,
+        },
+        updatedMarks: {
+          totalRaw: calc.totalRawMarks,
+          totalMax: calc.totalMaxMarks,
+          percentage: calc.calculatedPercentage,
+          grade: calc.calculatedGrade,
+          isExempt: calc.isExempt,
+          isAbsent: calc.isAbsent,
+        },
+        reason: params.isEditResubmission
+          ? `Teacher resubmitted edited marks for ${params.subjectId}`
+          : `Marks updated for ${params.subjectId}`,
+      });
+    }
+
     const record: MarksEntryRecord = {
       id: docId,
       sessionId: params.sessionId,
@@ -1256,6 +1524,7 @@ export async function saveMarksEntriesBatch(params: {
       calculatedGrade: calc.calculatedGrade,
       isAbsent: calc.isAbsent,
       isExempt: calc.isExempt,
+      isOptional: Boolean(params.isOptional),
       isPassed: calc.isPassed,
       workflowStatus: params.targetStatus,
       enteredBy: existingRec?.enteredBy || params.user.uid,
@@ -1301,18 +1570,20 @@ export async function saveMarksEntriesBatch(params: {
 }
 
 /**
- * Transitions submitted marks to verified, published, or locked.
+ * Transitions submitted marks to verified, published, locked, or reopened (draft).
+ * When reopening marks to draft, invalidates downstream report card signatures for affected students.
  */
 export async function transitionMarksWorkflow(params: {
   sessionId: string;
   sectionId: string;
   subjectId: string;
   examId: string;
-  targetStatus: "verified" | "published" | "locked";
+  targetStatus: "verified" | "published" | "locked" | "draft";
   user: { uid: string; name: string; role: string };
+  reason?: string;
 }): Promise<{ count: number }> {
   if (params.user.role !== "admin" && params.user.role !== "hod") {
-    throw new Error("Only Admin or HOD can verify, publish, or lock marks.");
+    throw new Error("Only Admin or HOD can verify, publish, lock, or reopen marks.");
   }
 
   const q = query(
@@ -1328,6 +1599,25 @@ export async function transitionMarksWorkflow(params: {
   const batch = writeBatch(db);
   let count = 0;
 
+  // If reopening marks back to draft, identify all affected students and invalidate report card signatures
+  if (params.targetStatus === "draft") {
+    for (const d of snap.docs) {
+      const data = d.data() as MarksEntryRecord;
+      const canonicalUid = data.studentUid || data.studentId;
+      if (canonicalUid) {
+        await invalidateReportCardSignaturesOnMarksChange({
+          sessionId: params.sessionId,
+          sectionId: params.sectionId,
+          studentUid: canonicalUid,
+          subjectId: params.subjectId,
+          examId: params.examId,
+          user: params.user,
+          reason: params.reason || `Marks reopened to draft by ${params.user.role.toUpperCase()} ${params.user.name}`,
+        });
+      }
+    }
+  }
+
   snap.forEach((d) => {
     const updateData: Partial<MarksEntryRecord> = {
       workflowStatus: params.targetStatus,
@@ -1339,6 +1629,9 @@ export async function transitionMarksWorkflow(params: {
       updateData.publishedAt = now;
     } else if (params.targetStatus === "locked") {
       updateData.lockedAt = now;
+    } else if (params.targetStatus === "draft") {
+      updateData.updatedBy = params.user.uid;
+      updateData.updatedAt = now;
     }
     batch.update(d.ref, updateData as any);
     count += 1;
@@ -1358,6 +1651,7 @@ export async function transitionMarksWorkflow(params: {
       details: {
         newStatus: params.targetStatus,
         affectedCount: count,
+        reason: params.reason || undefined,
       },
       performedBy: {
         uid: params.user.uid,
@@ -1851,5 +2145,277 @@ export async function signReportCardSequential(params: {
     newStatus: nextStatus,
     snapshot: check.snapshot,
   };
+}
+
+/**
+ * Compiles or refreshes the Annual Report Card for a single student from authoritative marksEntries.
+ * Correctly excludes exempt optional subjects from grandMax and percentage.
+ * Historical published and locked report cards are never overwritten.
+ */
+export async function compileStudentAnnualReportCard(params: {
+  sessionId: string;
+  sectionId: string;
+  student: Student;
+  structureVersion: AcademicStructureVersion;
+  subjects: Subject[];
+  user: { uid: string; name: string; role: string };
+}): Promise<PublishedReportCardSnapshot> {
+  const { sessionId, sectionId, student, structureVersion, subjects, user } = params;
+  const studentUid = student.studentUid || student.admissionNo || student.id;
+
+  // 1. Fetch all marksEntries for this student in this session
+  const marksSnap = await getDocs(
+    query(
+      collection(db, "marksEntries"),
+      where("sessionId", "==", sessionId),
+      where("studentUid", "==", studentUid)
+    )
+  );
+
+  const entriesBySubject: Record<string, Record<string, MarksEntryRecord>> = {};
+  marksSnap.docs.forEach((d) => {
+    const data = d.data() as MarksEntryRecord;
+    if (!entriesBySubject[data.subjectId]) {
+      entriesBySubject[data.subjectId] = {};
+    }
+    const termKey = data.termId || "term_1";
+    entriesBySubject[data.subjectId][termKey] = data;
+  });
+
+  // 2. Compute scholastic results for each subject
+  const scholasticResults: CalculatedSubjectResult[] = [];
+  const gradingScale = structureVersion.gradingScale;
+  const calcConfig = structureVersion.calculationConfig;
+
+  for (const sub of subjects) {
+    if (sub.category === "co-scholastic") continue;
+
+    const isOpt = isSubjectOptional({
+      subjectId: sub.id,
+      subject: sub,
+      structureVersion,
+    });
+
+    const subMarks = entriesBySubject[sub.id] || {};
+    const t1Rec = subMarks["term_1"] || subMarks["term1"];
+    const t2Rec = subMarks["term_2"] || subMarks["term2"];
+
+    const t1Perf: TermSubjectPerformance | undefined = t1Rec
+      ? {
+          termId: "term_1",
+          termName: t1Rec.termName || "Term 1",
+          examId: t1Rec.examId,
+          componentScores: (t1Rec.componentMarks as any) || {},
+          totalMarks: t1Rec.scaledTotalMarks ?? t1Rec.totalRawMarks,
+          maxMarks: t1Rec.totalMaxMarks,
+          percentage: t1Rec.calculatedPercentage,
+          grade: t1Rec.calculatedGrade,
+          isAbsent: t1Rec.isAbsent,
+          isExempt: t1Rec.isExempt,
+          isPassed: t1Rec.isPassed,
+        }
+      : undefined;
+
+    const t2Perf: TermSubjectPerformance | undefined = t2Rec
+      ? {
+          termId: "term_2",
+          termName: t2Rec.termName || "Term 2",
+          examId: t2Rec.examId,
+          componentScores: (t2Rec.componentMarks as any) || {},
+          totalMarks: t2Rec.scaledTotalMarks ?? t2Rec.totalRawMarks,
+          maxMarks: t2Rec.totalMaxMarks,
+          percentage: t2Rec.calculatedPercentage,
+          grade: t2Rec.calculatedGrade,
+          isAbsent: t2Rec.isAbsent,
+          isExempt: t2Rec.isExempt,
+          isPassed: t2Rec.isPassed,
+        }
+      : undefined;
+
+    const subCalc = calculateSubjectTermAndOverall({
+      terms: {
+        term1: t1Perf
+          ? {
+              examTotal: t1Perf.totalMarks,
+              examMax: t1Perf.maxMarks,
+              isAbsent: t1Perf.isAbsent,
+              isExempt: t1Perf.isExempt,
+            }
+          : undefined,
+        term2: t2Perf
+          ? {
+              examTotal: t2Perf.totalMarks,
+              examMax: t2Perf.maxMarks,
+              isAbsent: t2Perf.isAbsent,
+              isExempt: t2Perf.isExempt,
+            }
+          : undefined,
+      },
+      calculationConfig: calcConfig,
+      gradingScale,
+      isOptional: isOpt,
+    });
+
+    scholasticResults.push({
+      subjectId: sub.id,
+      subjectName: sub.name,
+      category: "scholastic",
+      isOptional: isOpt,
+      isExempt: subCalc.isExempt,
+      term1: t1Perf,
+      term2: t2Perf,
+      terms: {
+        ...(t1Perf ? { term_1: t1Perf } : {}),
+        ...(t2Perf ? { term_2: t2Perf } : {}),
+      },
+      overallTotal: subCalc.overallTotal,
+      overallMax: subCalc.overallMax,
+      overallPercentage: subCalc.overallPercentage,
+      overallGrade: subCalc.overallGrade,
+      isPassed: subCalc.isPassed,
+    });
+  }
+
+  // 3. Evaluate institutional result across all scholastic subjects
+  // (Exempt optional subjects excluded from denominator!)
+  const instResult = evaluateInstitutionalResult({
+    scholasticResults,
+    calculationConfig: calcConfig,
+    gradingScale,
+  });
+
+  // 4. Fetch pending details (discipline A-D, co-scholastic, remarks, promotion)
+  const detailSnap = await getDoc(
+    doc(db, "reportCardPendingDetails", `${sessionId}_${sectionId}_${studentUid}`)
+  );
+  const pendingData = detailSnap.exists() ? detailSnap.data() : {};
+
+  // 5. Check if report card already exists in Firestore
+  const cardDocId = `${sessionId}_annual_${studentUid}`;
+  const cardRef = doc(db, "publishedReportCards", cardDocId);
+  const existingCardSnap = await getDoc(cardRef);
+  const existingCard = existingCardSnap.exists()
+    ? (existingCardSnap.data() as PublishedReportCardSnapshot)
+    : null;
+
+  // If already published/locked, preserve it without alteration per Historical Document Rule!
+  if (existingCard && (existingCard.workflowStatus === "published" || (existingCard as any).isLocked === true)) {
+    return existingCard;
+  }
+
+  const snapshotPayload: PublishedReportCardSnapshot = {
+    id: cardDocId,
+    sessionId,
+    academicYear: structureVersion.academicYear || "2026-27",
+    reportPeriod: "annual",
+    workflowStatus: existingCard?.workflowStatus || (pendingData?.disciplineGrades ? "draft" : "incomplete"),
+    studentUid,
+    studentDocId: student.id,
+    studentId: studentUid,
+    studentName: student.name,
+    admissionNo: student.admissionNo || "",
+    rollNo: student.rollNo || "",
+    grade: student.grade || "",
+    sectionId,
+    sectionName: (student as any).sectionName || "",
+    fatherName: student.fatherName || "",
+    motherName: student.motherName || "",
+    dob: (student as any).dob || "",
+    address: student.address || "",
+    structureId: structureVersion.structureId,
+    structureVersionNumber: structureVersion.versionNumber,
+    structureName: structureVersion.structureId,
+    layoutConfig: structureVersion.reportCardLayout || {
+      schoolName: "Prestige International School",
+      affiliationNo: "CBSE/AFF/2026/0942",
+      schoolAddress: "Campus Boulevard, Knowledge Park, Bengaluru, Karnataka 560001",
+      tagline: "Inspiring Excellence, Cultivating Character",
+      showSchoolLogo: true,
+      showBoardLogo: true,
+      sections: [],
+      signatureSlots: [
+        { role: "class_teacher", label: "Class Teacher", required: true },
+        { role: "hod", label: "Head of Department", required: true },
+        { role: "principal", label: "Principal", required: true },
+      ],
+      gradingScalePlacement: "bottom_page1",
+    },
+    scholasticTableConfig: structureVersion.scholasticTableConfig,
+    coScholasticConfig: structureVersion.coScholasticConfig,
+    scholasticResults,
+    coScholasticGrades: pendingData?.coScholasticGrades || existingCard?.coScholasticGrades || {},
+    disciplineGrades: pendingData?.disciplineGrades || existingCard?.disciplineGrades || {},
+    grandTotal: instResult.grandTotal,
+    grandMax: instResult.grandMax,
+    grandPercentage: instResult.grandPercentage,
+    grandGrade: instResult.grandGrade,
+    resultStatus: instResult.resultStatus,
+    promotedToGrade: pendingData?.promotedToGrade || existingCard?.promotedToGrade || "",
+    teacherRemarks: pendingData?.teacherRemarks || existingCard?.teacherRemarks || "",
+    publishedAt: existingCard?.publishedAt || "",
+    publishedBy: existingCard?.publishedBy || "",
+    signatures: existingCard?.signatures || {},
+  };
+
+  await setDoc(cardRef, snapshotPayload, { merge: true });
+  return snapshotPayload;
+}
+
+/**
+ * Generates or refreshes draft Annual Report Cards for all enrolled students in a section.
+ */
+export async function generateAnnualReportCardsForSection(params: {
+  sessionId: string;
+  sectionId: string;
+  user: { uid: string; name: string; role: string };
+}): Promise<{ generatedCount: number; snapshots: PublishedReportCardSnapshot[] }> {
+  const { sessionId, sectionId, user } = params;
+
+  // 1. Fetch section and active structure
+  const secSnap = await getDoc(doc(db, "sections", sectionId));
+  if (!secSnap.exists()) throw new Error("Section not found.");
+  const section = { id: secSnap.id, ...secSnap.data() } as Section;
+
+  const structRes = await getActiveStructureForGrade(section.grade, sessionId);
+  if (!structRes) throw new Error(`No active academic structure configured for Grade ${section.grade}.`);
+
+  // 2. Fetch subjects for grade
+  const subjSnap = await getDocs(query(collection(db, "subjects"), where("grade", "==", section.grade)));
+  const subjects = subjSnap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as Subject))
+    .filter((s) => s.category !== "co-scholastic");
+
+  // 3. Fetch active enrollments
+  const enrollSnap = await getDocs(
+    query(
+      collection(db, "enrollments"),
+      where("sectionId", "==", sectionId),
+      where("status", "==", "active")
+    )
+  );
+
+  const students: Student[] = [];
+  for (const enrDoc of enrollSnap.docs) {
+    const enr = enrDoc.data() as Enrollment;
+    const stuDoc = await getDoc(doc(db, "students", enr.studentId));
+    if (stuDoc.exists()) {
+      students.push({ id: stuDoc.id, ...stuDoc.data() } as Student);
+    }
+  }
+
+  const snapshots: PublishedReportCardSnapshot[] = [];
+  for (const student of students) {
+    const snap = await compileStudentAnnualReportCard({
+      sessionId,
+      sectionId,
+      student,
+      structureVersion: structRes.version,
+      subjects,
+      user,
+    });
+    snapshots.push(snap);
+  }
+
+  return { generatedCount: snapshots.length, snapshots };
 }
 

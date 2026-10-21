@@ -744,6 +744,7 @@ export default function TeacherMarksEntry() {
         targetStatus,
         user: { uid: appUser.id, name: appUser.name, role: appUser.role },
         isEditResubmission: isEditingSubmitted,
+        isOptional: Boolean(selectedSubject.isOptional),
       });
 
       if (res.errors.length > 0) {

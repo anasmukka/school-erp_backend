@@ -336,8 +336,11 @@ export default function StudentResults() {
                   if (rec) {
                     hasAnyMarks = true;
                     const score = rec.scaledTotalMarks ?? rec.totalRawMarks;
-                    totalEarned += score;
-                    totalMax += rec.totalMaxMarks;
+                    const isExemptOptional = Boolean((sub.isOptional || rec.isOptional) && rec.isExempt);
+                    if (!isExemptOptional) {
+                      totalEarned += score;
+                      totalMax += rec.totalMaxMarks;
+                    }
 
                     return (
                       <tr key={sub.id} className="hover:bg-muted/10 transition-colors">
@@ -386,21 +389,25 @@ export default function StudentResults() {
                 })}
               </tbody>
 
-              {hasAnyMarks && totalMax > 0 && (
+              {hasAnyMarks && (
                 <tfoot>
                   <tr className="border-t-2 border-border/80 bg-muted/40 font-bold">
                     <td className="p-3 text-slate-900">Total Marks & Aggregate</td>
-                    <td className="p-3 text-center text-slate-900">{totalMax}</td>
-                    <td className="p-3 text-center text-slate-900">{Math.round(totalEarned)}</td>
+                    <td className="p-3 text-center text-slate-900">{totalMax > 0 ? totalMax : "—"}</td>
+                    <td className="p-3 text-center text-slate-900">{totalMax > 0 ? Math.round(totalEarned) : "—"}</td>
                     <td className="p-3 text-center text-slate-900">
-                      {((totalEarned / totalMax) * 100).toFixed(1)}%
+                      {totalMax > 0 ? `${((totalEarned / totalMax) * 100).toFixed(1)}%` : "Exempt / N/A"}
                     </td>
                     <td className="p-3 text-center">
                       <Badge className="bg-primary text-white font-bold">
-                        {totalEarned / totalMax >= 0.8 ? "A" : totalEarned / totalMax >= 0.6 ? "B" : totalEarned / totalMax >= 0.4 ? "C" : "D"}
+                        {totalMax > 0
+                          ? (totalEarned / totalMax >= 0.8 ? "A" : totalEarned / totalMax >= 0.6 ? "B" : totalEarned / totalMax >= 0.4 ? "C" : "D")
+                          : "EX"}
                       </Badge>
                     </td>
-                    <td className="p-3 text-center text-emerald-700">PASSED</td>
+                    <td className="p-3 text-center text-emerald-700">
+                      {totalMax > 0 ? "PASSED" : "EXEMPT"}
+                    </td>
                   </tr>
                 </tfoot>
               )}

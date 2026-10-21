@@ -28,6 +28,7 @@ import {
   evaluateInstitutionalResult,
   calculateSubjectTermAndOverall,
   VALID_DISCIPLINE_GRADES,
+  generateAnnualReportCardsForSection,
 } from "@/lib/resultEngine";
 import { generateReportCardPdf } from "@/lib/generateReportCardPdf";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -363,6 +364,33 @@ export default function AnnualReportCards() {
     }
   };
 
+  const [calculatingDrafts, setCalculatingDrafts] = useState(false);
+
+  const handleGenerateDrafts = async () => {
+    if (!selectedSectionId || !appUser) return;
+    try {
+      setCalculatingDrafts(true);
+      const res = await generateAnnualReportCardsForSection({
+        sessionId: effectiveSessionId,
+        sectionId: selectedSectionId,
+        user: { uid: appUser.id, name: appUser.name, role: appUser.role },
+      });
+      toast({
+        title: "Report Cards Calculated",
+        description: `Successfully compiled results for ${res.generatedCount} students. Drafts are ready for Class Teacher review.`,
+      });
+      await reloadData();
+    } catch (err: any) {
+      toast({
+        title: "Calculation Failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setCalculatingDrafts(false);
+    }
+  };
+
   if (loading && sections.length === 0) {
     return <PageSkeleton />;
   }
@@ -383,10 +411,19 @@ export default function AnnualReportCards() {
 
         <div className="flex items-center gap-2">
           <Button
+            size="sm"
+            onClick={handleGenerateDrafts}
+            disabled={loading || calculatingDrafts || students.length === 0}
+            className="flex items-center gap-1.5 bg-primary text-white"
+          >
+            {calculatingDrafts ? <Loader2 className="h-4 w-4 animate-spin" /> : <Award className="h-4 w-4" />}
+            Calculate / Refresh Drafts
+          </Button>
+          <Button
             variant="outline"
             size="sm"
             onClick={reloadData}
-            disabled={loading}
+            disabled={loading || calculatingDrafts}
             className="flex items-center gap-1.5"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
