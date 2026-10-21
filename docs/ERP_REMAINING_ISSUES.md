@@ -36,6 +36,19 @@ During the production readiness remediation sprint on the active project (`prest
 
 ## 3. Detailed Resolution & Verification Breakdown
 
+### 3.0 Canonical Firebase Project Identity & Legacy Reference Audit
+- **Project Verification:**
+  - **Verified Display Name:** `prestigeERP`
+  - **Verified Canonical Project ID:** `prestige-erp` (Project Number: `260740002503`)
+  - **Registered Web App ID:** `1:260740002503:web:fed0cbe0d4e6274b4a04e2`
+  - **Client Auth Domain:** `prestige-erp.firebaseapp.com`
+  - **Storage Bucket:** `prestige-erp.firebasestorage.app`
+- **Legacy Identifier (`schoolerpv2`) Audit:**
+  - Exhaustively searched the entire codebase across active configurations, scripts, functions, workers, and templates.
+  - All active configurations (including `.firebaserc`, `.env`, `.env.example`, `public/firebase-messaging-sw.js`, `worker/wrangler.toml`, `worker/src/auth.ts`, `backend/.env.example`) point exclusively to `prestige-erp`.
+  - Zero active runtime references to `schoolerpv2` remain in the codebase.
+  - Any textual mentions of `schoolerpv2` in this document are retained purely for historical audit context (documenting the previous problem state prior to remediation).
+
 ### 3.1 PROD-01: Worker Firebase Project ID Alignment
 - **Problem:** `worker/wrangler.toml` specified `FIREBASE_PROJECT_ID = "schoolerpv2"` and `worker/src/auth.ts` had `"schoolerpv2"` hardcoded as default fallback in `verifyFirebaseToken` and `resolveErpUser`. The active Firebase project is `prestige-erp`.
 - **Changes Applied:**

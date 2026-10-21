@@ -60,9 +60,9 @@ A production-grade, multi-tenant hybrid School ERP system combining **Firebase**
 - **Multi-Tier Signing Chain**: Draft generation by Class Teacher → Review & signing by HOD → Final approval & seal by Principal → Publication to Student Portal.
 - **Automated Alerts**: Email and WhatsApp alerts triggered automatically for missing subject marks.
 
-### 4. RFID Attendance System
-- **IoT Hardware Integration**: ESP32 / Arduino devices submit attendance scans via HTTP POST.
-- **Daily Aggregation**: One attendance record per student per day with real-time cashier and class dashboards.
+### 4. Attendance Workflow
+- **Class Teacher Manual Attendance**: Homeroom roll-call interface (`src/pages/teacher/ManualAttendance.tsx`) with instant P/A/L marking and monthly registers (`AttendanceRegister.tsx`).
+- **Archived RFID Subsystem**: IoT hardware scanning implementation is cleanly preserved in `archive/future-rfid/` for future hardware deployment.
 
 ### 5. P0 Security Architecture & Plaintext Password Elimination
 - **Zero Firestore Passwords**: Firestore Security Rules strictly reject any document creation or update containing `password`, `plainPassword`, `tempPassword`, `passwordHash`, or `salt`.
@@ -151,12 +151,12 @@ cd functions && npm install && cd ..
 Create a `.env` file in the project root:
 
 ```env
-VITE_FIREBASE_API_KEY=your_firebase_api_key
-VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your_firebase_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
+VITE_API_KEY=your_firebase_api_key
+VITE_AUTH_DOMAIN=prestige-erp.firebaseapp.com
+VITE_PROJECT_ID=prestige-erp
+VITE_STORAGE_BUCKET=prestige-erp.firebasestorage.app
+VITE_MESSAGING_SENDER_ID=your_messaging_sender_id
+VITE_APP_ID=your_app_id
 
 # Cloudflare Worker endpoint (optional in dev, required in production)
 VITE_WORKER_URL=http://localhost:8787
